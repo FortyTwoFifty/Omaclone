@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+
+source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+
+id() { printf '%s\n' s3; }
+describe() { printf '%s\n' "S3-compatible cloud (AWS, R2, Wasabi, B2, MinIO)"; }
+available() { exit 0; }
+capabilities() { printf '%s\n' "remote"; }
+credential_keys() { printf '%s\n' "s3-access-key" "s3-secret-key"; }
+
+_restic_url() {
+  local endpoint bucket prefix
+  endpoint=$(cfg transport.endpoint)
+  bucket=$(cfg transport.bucket)
+  prefix=$(cfg transport.prefix omaclone)
+  endpoint="${endpoint#https://}"
+  endpoint="${endpoint#http://}"
+  endpoint="${endpoint%/}"
+  prefix="${prefix#/}"
+  prefix="${prefix%/}"
+  if [[ "$endpoint" == s3.amazonaws.com || "$endpoint" == s3.*.amazonaws.com ]]; then
+    printf 's3:%s/%s/%s\n' "$endpoint" "$bucket" "$prefix"
+  else
+    printf 's3:https://%s/%s/%s\n' "$endpoint" "$bucket" "$prefix"
+  fi
+}
+
+_preset_endpoint() {
+  local preset="$1"
+  case "$preset" in
+    aws) printf '%s\n' "s3.amazonaws.com" ;;
+    r2) printf '%s\n' "" ;;
+    wasabi) printf '%s\n' "s3.wasabisys.com" ;;
+    b2) printf '%s\n' "s3.us-west-000.backblazeb2.com" ;;
+    minio|"") printf '%s\n' "" ;;
+    *) printf '%s\n' "" ;;
+  esac
+}
+
+setup() {
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+
+  local preset endpoint bucket prefix region
+  if have_cmd gum; then
+    preset=$(printf '%s\n' \
+      "Cloudflare R2" \
+      "AWS S3" \
+      "Wasabi" \
+      "Backblaze B2 (S3 API)" \
+      "MinIO / custom endpoint" \
+      | gum choose --header="Which S3-compatible service?")
+    case "$preset" in
+      Cloudflare*) preset=r2 ;;
+      AWS*) preset=aws ;;
+      Wasabi*) preset=wasabi ;;
+      Backblaze*) preset=b2 ;;
+      *) preset=minio ;;
+    esac
+  else
+    preset=minio
+  fi
+
+  endpoint=$(_preset_endpoint "$preset")
+  if [[ "$preset" == r2 ]]; then
+    local account
+    account=$(gum_input "Cloudflare account id (or paste the full R2 endpoint)" "")
+    if [[ "$account" == *.* ]]; then
+      endpoint="$account"
+    else
+      endpoint="${account}.r2.cloudflarestorage.com"
+    fi
+  elif [[ -z "$endpoint" || "$preset" == minio || "$preset" == b2 ]]; then
+    endpoint=$(gum_input "S3 endpoint host (no https://)" "$endpoint")
+  fi
+  bucket=$(cfg transport.bucket "")
+  bucket=$(gum_input "Bucket name" "$bucket")
+  prefix=$(cfg transport.prefix omaclone)
+  prefix=$(gum_input "Prefix inside the bucket" "$prefix")
+  region=$(cfg transport.region "")
+  if [[ "$preset" == aws || -n "$region" ]]; then
+    region=$(gum_input "Region (us-east-1, …; empty if unused)" "$region")
+  fi
+  [[ -n "$endpoint" && -n "$bucket" ]] || { printf '%s\n' "endpoint and bucket are required" >&2; exit 1; }
+
+  cfg_set transport.backend s3
+  cfg_set transport.preset "$preset"
+  cfg_set transport.endpoint "$endpoint"
+  cfg_set transport.bucket "$bucket"
+  cfg_set transport.prefix "$prefix"
+  cfg_set transport.region "$region"
+  cfg_set restic.repo "$(_restic_url)"
+
+  echo "Store S3 access keys in the keyring (not in config)." >&2
+  transport_secret_prompt_and_store s3-access-key "S3 access key id"
+  transport_secret_prompt_and_store s3-secret-key "S3 secret access key"
+}
+
+mount() { ready; }
+unmount() { exit 0; }
+
+ready() {
+  local repo
+  repo=$(cfg restic.repo)
+  [[ -n "$repo" ]] || return 1
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  transport_secret_get s3-access-key >/dev/null || return 1
+  transport_secret_get s3-secret-key >/dev/null || return 1
+}
+
+pre_restic() {
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  local envf="${NAS_BACKUP_ENVFILE:-}"
+  [[ -n "$envf" ]] || return 0
+  local id secret region
+  id=$(transport_secret_get s3-access-key) || return 1
+  secret=$(transport_secret_get s3-secret-key) || return 1
+  region=$(cfg transport.region)
+  umask 077
+  {
+    printf 'AWS_ACCESS_KEY_ID=%q\n' "$id"
+    printf 'AWS_SECRET_ACCESS_KEY=%q\n' "$secret"
+    if [[ -n "$region" ]]; then
+      printf 'AWS_DEFAULT_REGION=%q\n' "$region"
+    fi
+  } >"$envf"
+  chmod 600 "$envf"
+  unset id secret
+}
+
+bootstrap-install() {
+  printf '%s\n' "S3 has no runnable ./restore file. On a new computer: omarchy plugin add <this-repo> && ~/.config/omarchy/plugins/omaclone.plugin/scripts/omaclone restore" >&2
+  return 0
+}
+
+dispatch_transport "${1:-}"

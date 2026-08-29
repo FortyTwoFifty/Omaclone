@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+
+source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+
+id() { printf '%s\n' nfs; }
+describe() { printf '%s\n' "NFS (Unix share: TrueNAS, Synology, Unraid, …)"; }
+
+install() {
+  if command -v mount.nfs4 >/dev/null 2>&1 || command -v mount.nfs >/dev/null 2>&1; then return 0; fi
+  source "$NAS_BACKUP_ROOT/scripts/deps.sh" || true
+  deps_ensure_pacman nfs-utils mount.nfs
+}
+
+available() { command -v mount.nfs4 >/dev/null 2>&1 || command -v mount.nfs >/dev/null 2>&1; }
+
+capabilities() { printf '%s\n' "mount"; }
+
+ensure_nfs_utils() {
+  if command -v mount.nfs4 >/dev/null 2>&1 || command -v mount.nfs >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Installing nfs-utils…" >&2
+  sudo pacman -S --needed --noconfirm nfs-utils
+}
+
+_nfs_type() {
+  if command -v mount.nfs4 >/dev/null 2>&1; then
+    echo nfs4
+  else
+    echo nfs
+  fi
+}
+
+setup() {
+  ensure_nfs_utils
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  source "$NAS_BACKUP_ROOT/scripts/nfs-lib.sh"
+
+  local uri mountpoint repo
+  uri=$(cfg transport.uri "")
+  mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+
+  while true; do
+    uri=$(prompt_until "NFS URI (host:/export)" "$uri" nfs_validate_uri) || exit 1
+    mountpoint=$(prompt_until "Local mountpoint" "$mountpoint" nfs_validate_mountpoint) || exit 1
+    mountpoint="${mountpoint%/}"
+
+    if nfs_mountpoint_busy "$uri" "$mountpoint"; then
+      printf '%s\n' "$mountpoint is already mounted from $(nfs_mountpoint_source_label "$mountpoint"). Pick a different mountpoint or unmount it first." >&2
+      if have_cmd gum && gum confirm "Enter a different NFS location?"; then
+        continue
+      fi
+      exit 1
+    fi
+
+    if nfs_already_mounted "$uri" "$mountpoint"; then
+      printf '%s\n' "Already mounted: $uri at $mountpoint" >&2
+      break
+    fi
+
+    printf '%s\n' "Checking that $uri is exported and reachable before creating any system services…" >&2
+    if nfs_check_available "$uri"; then
+      break
+    fi
+    if have_cmd gum && gum confirm "NFS share is not available. Enter a different location?"; then
+      continue
+    fi
+    printf '%s\n' "Not installing a systemd mount for an unreachable share." >&2
+    exit 1
+  done
+
+  if ! findmnt -n "$mountpoint" >/dev/null 2>&1; then
+    if have_cmd gum && gum confirm "Install systemd automount for $mountpoint (needs sudo)?"; then
+      OMACLONE_NFS_ALREADY_PROBED=1 "$NAS_BACKUP_ROOT/scripts/install-nfs-mount.sh" "$uri" "$mountpoint"
+    else
+      sudo mkdir -p "$mountpoint"
+      sudo mount -t "$(_nfs_type)" -o rw,hard,nconnect=8,noatime,_netdev "$uri" "$mountpoint"
+    fi
+  fi
+
+  if ! findmnt -n "$mountpoint" >/dev/null 2>&1; then
+    printf '%s\n' "NFS share did not mount at $mountpoint; not saving this location." >&2
+    exit 1
+  fi
+
+  cfg_set transport.backend nfs
+  cfg_set transport.uri "$uri"
+  cfg_set transport.mountpoint "$mountpoint"
+
+  repo="${mountpoint%/}/omaclone/repo"
+  repo=$(prompt_until "Restic repo path on the share" "$repo" nfs_validate_repo "$mountpoint") || exit 1
+  cfg_set restic.repo "$repo"
+
+  local probe="$mountpoint"
+  [[ -d "$(dirname "$repo")" ]] && probe="$(dirname "$repo")"
+  if ! dir_is_writable "$probe"; then
+    explain_nfs_uid_mismatch "$probe"
+    exit 1
+  fi
+}
+
+mount() {
+  ensure_nfs_utils
+  source "$NAS_BACKUP_ROOT/scripts/nfs-lib.sh"
+  local uri mountpoint
+  uri=$(cfg transport.uri)
+  mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+  nfs_validate_uri "$uri" || {
+    printf '%s\n' "transport.uri is not a valid NFS location: ${uri:-empty}" >&2
+    exit 1
+  }
+  nfs_validate_mountpoint "$mountpoint" || exit 1
+  if findmnt -n "$mountpoint" >/dev/null 2>&1; then
+    exit 0
+  fi
+  sudo_noninteractive mkdir -p "$mountpoint" || exit 1
+  local fstype opts
+  fstype=$(_nfs_type)
+  opts="rw,hard,nconnect=8,noatime,_netdev"
+  if ! sudo_noninteractive mount -t "$fstype" -o "$opts" "$uri" "$mountpoint"; then
+    sudo_noninteractive mount -t "$fstype" -o rw,hard,noatime,_netdev "$uri" "$mountpoint" || exit 1
+  fi
+}
+
+unmount() {
+  local mountpoint
+  mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+  sudo umount "$mountpoint" 2>/dev/null || true
+}
+
+ready() {
+  local repo mountpoint
+  mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+  repo=$(cfg restic.repo)
+  stat "$mountpoint" >/dev/null 2>&1 || true
+  findmnt -n "$mountpoint" >/dev/null 2>&1 || return 1
+  [[ -n "$repo" ]]
+}
+
+bootstrap-install() {
+  local dest
+  dest=$(cfg transport.mountpoint /mnt/omaclone)
+  ready || mount
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  dest=$(omaclone_kit_dir "$dest")
+  python3 "$NAS_BACKUP_ROOT/scripts/bootstrap_copy.py" "$NAS_BACKUP_ROOT" "$dest" "$NAS_BACKUP_CONFIG"
+}
+
+dispatch_transport "${1:-}"

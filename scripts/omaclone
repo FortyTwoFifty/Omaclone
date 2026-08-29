@@ -1,0 +1,1497 @@
+#!/usr/bin/env bash
+set +o history 2>/dev/null || true
+unset HISTFILE
+set +x +v
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+export NAS_BACKUP_ROOT="$ROOT"
+mkdir -p "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
+
+source "$ROOT/scripts/lib.sh"
+source "$ROOT/scripts/locations.sh"
+source "$ROOT/scripts/backend.sh"
+source "$ROOT/scripts/tui.sh"
+
+usage() {
+  cat <<'EOF'
+omaclone — clone an Omarchy identity to NAS, extra disk, or S3-compatible cloud
+
+Usage:
+  omaclone setup [secrets|continue]  First-run or resume wizard; secrets reconfigures the password source
+  omaclone clone [--cron]        Save an identity clone (alias: backup)
+  omaclone restore [--same-machine] [--snapshot ID]
+  omaclone snapshots
+  omaclone forget [ID...] [--all] [--yes]
+  omaclone status [--json|--ack]     Show last clone, size, keep plan, location connected
+  omaclone install               PATH command, user timers, bar plugin
+  omaclone uninstall             Remove PATH command, timers, and plugin symlink
+  omaclone check
+  omaclone init                  restic init on the configured repo
+  omaclone prune
+  omaclone retention [set PRESET] [--yes]
+  omaclone location              List clone locations
+  omaclone location switch [ID]  Make a location active
+  omaclone location add          Register another NAS / disk / cloud
+  omaclone location remove [ID]  Forget a location (does not erase the drive)
+  omaclone doctor                Check destination, uid mapping, repo path
+EOF
+}
+
+ensure_transport() {
+  local cron=0
+  [[ "${1:-}" == --cron ]] && cron=1
+  local backend
+  backend=$(config_get transport.backend)
+  [[ -n "$backend" ]] || die "no transport configured; run: omaclone setup"
+  if (( cron )); then
+    local loc sched
+    loc=$(location_active_id)
+    sched=$(location_get "$loc" schedule on)
+    if [[ "$sched" == off ]]; then
+      location_schedule_apply "$loc"
+      write_last_result skip "Automatic clones are off for this location"
+      log "skipping: location '$loc' is not scheduled"
+      exit 0
+    fi
+  fi
+  if nas_backup_backend_run transport "$backend" ready; then
+    return 0
+  fi
+  if (( cron )) && nas_backup_transport_has "$backend" removable; then
+    local uuid
+    uuid=$(config_get transport.uuid)
+    if [[ -z "$uuid" || ! -e "/dev/disk/by-uuid/$uuid" ]]; then
+      write_last_result skip "Clone disk is not connected"
+      notify "Omaclone skipped" "Plug in the clone disk and it will run next time." low
+      log "skipping: clone disk is not connected"
+      exit 0
+    fi
+  fi
+  if ! nas_backup_backend_run transport "$backend" mount; then
+    if (( cron )); then
+      write_last_result skip "Clone location is not mounted"
+      notify "Omaclone skipped" "Mount the clone location and it will run next time." low
+      log "skipping: clone location is not mounted"
+      exit 0
+    fi
+    die "transport '$backend' is not ready"
+  fi
+  nas_backup_backend_run transport "$backend" ready || die "transport '$backend' is not ready"
+}
+
+finish_transport() {
+  local backend
+  backend=$(config_get transport.backend)
+  [[ -n "$backend" ]] || return 0
+  nas_backup_backend_run transport "$backend" post-restic 2>/dev/null || true
+}
+
+_maybe_generate_restic_password() {
+  local backend
+  backend=$(config_get secrets.backend)
+  [[ "$backend" == keyring ]] || return 0
+  if nas_backup_backend_run secrets keyring get >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! tui_confirm "Generate a new restic password and store it in the keyring?"; then
+    return 0
+  fi
+  local pw
+  pw=$(generate_restic_password)
+  printf '%s' "$pw" | nas_backup_backend_run secrets keyring put
+  tui_note "Password generated and stored. It is shown once — save it in your password manager."
+  if have gum; then
+    gum style --bold "$pw" >/dev/tty
+  else
+    printf '%s\n' "$pw" >/dev/tty
+  fi
+  unset pw
+  if tui_confirm "I have saved this password somewhere I can reach after a reinstall"; then
+    return 0
+  fi
+  die "store the restic password before continuing; it cannot be recovered from the repo"
+}
+
+_setup_pick_destination() {
+  local where transport
+  where=$(printf '%s\n' \
+    "NAS (TrueNAS, Synology, Unraid, …)" \
+    "Extra disk (USB, 2nd drive, cold storage)" \
+    "Cloud (S3-compatible: R2, AWS, Wasabi, B2, MinIO)" \
+    "A path that is already mounted" \
+    | gum choose --header="Where should this clone live?")
+  case "$where" in
+    NAS*)
+      config_set destination.profile nas
+      local vendor
+      vendor=$(printf '%s\n' \
+        "TrueNAS (NFS recommended)" \
+        "Synology (SMB or SFTP recommended)" \
+        "Other" \
+        | gum choose --header="What kind of NAS?")
+      case "$vendor" in
+        TrueNAS*)
+          config_set destination.vendor truenas
+          tui_note "A dedicated NFS dataset is typical. Prefer NFSv4."
+          ;;
+        Synology*)
+          config_set destination.vendor synology
+          tui_note "SMB or SFTP is usually easier than NFS uid mapping on Synology."
+          ;;
+        *)
+          config_set destination.vendor other
+          ;;
+      esac
+      transport=$(nas_backup_backend_choose_all transport "How should this machine reach the NAS?" nfs cifs sftp)
+      nas_backup_backend_ensure transport "$transport" || die "could not install $transport CLI; fix and re-run: omaclone setup"
+      ;;
+    Extra*)
+      config_set destination.profile disk
+      transport=disk
+      ;;
+    Cloud*)
+      config_set destination.profile cloud
+      transport=s3
+      ;;
+    *)
+      config_set destination.profile local
+      transport=local
+      ;;
+  esac
+  nas_backup_backend_run transport "$transport" setup
+}
+
+_setup_init_repo() {
+  if ! have restic; then
+    tui_note "Installing restic…"
+    sudo pacman -S --needed --noconfirm restic jq
+  fi
+  need_cmd restic jq
+  _setup_ensure_transport || return 1
+  local repo parent
+  repo=$(restic_repo)
+  parent=$(dirname "$repo")
+  case "$repo" in
+    s3:*|sftp:*) parent="" ;;
+  esac
+  if [[ -n "$parent" && ! -d "$parent" ]]; then
+    mkdir -p "$parent" || die "cannot create $parent"
+  fi
+  if [[ -n "$parent" ]] && ! dir_is_writable "$parent"; then
+    explain_nfs_uid_mismatch "$parent"
+    die "backup location is not writable as uid $(id -u)"
+  fi
+
+  while true; do
+    password_load || return 1
+    transport_prepare_env
+    local errfile rc looks_wrong=0
+    errfile=$(mktemp -p "$(_password_tmpdir)" omaclone.err.XXXXXX)
+    set +e
+    restic_exec cat config >/dev/null 2>"$errfile"
+    rc=$?
+    set -e
+    if grep -qi 'wrong password\|no key found' "$errfile" 2>/dev/null; then
+      looks_wrong=1
+    fi
+    rm -f "$errfile"
+    password_cleanup
+
+    if (( rc == 0 )); then
+      tui_note "Repository already exists at $repo"
+      mark_repo_initialized
+      return 0
+    fi
+
+    case "$repo" in
+      s3:*|sftp:*) ;;
+      *) [[ -f "$repo/config" ]] && looks_wrong=1 ;;
+    esac
+
+    if (( looks_wrong )); then
+      tui_error "The password did not open the repository at $repo."
+      local choice
+      choice=$(printf '%s\n' \
+        "Try a different password" \
+        "Continue later" \
+        | gum choose --header="Password mismatch") || return 1
+      case "$choice" in
+        Try*)
+          nas_backup_backend_run secrets "$(config_get secrets.backend)" setup
+          continue
+          ;;
+        Continue*)
+          tui_note "Run: omaclone setup"
+          return 1
+          ;;
+      esac
+    else
+      if tui_confirm "Initialize a new restic repository at $repo?"; then
+        password_load || return 1
+        transport_prepare_env
+        restic_exec init
+        password_cleanup
+        mark_repo_initialized
+        return 0
+      else
+        tui_note "Repository not initialized. Run: omaclone setup"
+        return 1
+      fi
+    fi
+  done
+}
+
+_setup_register_location() {
+  local suggested id label schedule backend mode uuid existing
+  backend=$(config_get transport.backend)
+  mode=$(config_get transport.mode)
+  uuid=$(config_get transport.uuid)
+  existing=""
+  if [[ -n "$uuid" ]]; then
+    existing=$(location_find_id_by_uuid "$uuid" || true)
+  fi
+  if [[ -n "$existing" ]]; then
+    suggested="$existing"
+  else
+    suggested=$(location_slug "$(location_default_label "$backend" "$(config_get destination.profile)" "$mode")")
+  fi
+  if command -v gum >/dev/null 2>&1; then
+    label=$(gum input --placeholder "Name for this location" --value "$(location_get "$existing" label "$(location_default_label "$backend" "$(config_get destination.profile)" "$mode")")" </dev/tty)
+    if [[ -n "$existing" ]]; then
+      id="$existing"
+    else
+      id=$(gum input --placeholder "Short id" --value "$suggested" </dev/tty)
+    fi
+  else
+    label=$(location_default_label "$backend" "$(config_get destination.profile)" "$mode")
+    id="$suggested"
+  fi
+  if [[ -n "$existing" ]]; then
+    id="$existing"
+  else
+    id=$(location_slug "$id")
+  fi
+  schedule=$(location_default_schedule "$backend" "$mode")
+  if [[ "$schedule" == off ]]; then
+    :
+  elif tui_confirm "Run automatic daily clones to this location?"; then
+    schedule=on
+  else
+    schedule=off
+  fi
+  location_save_current "$id" "$label" "$schedule"
+  config_set locations.active "$id"
+  LOCATION_LAST_ID="$id"
+}
+
+_setup_secrets() {
+  local secrets
+  secrets=$(nas_backup_backend_choose_all secrets "How should omaclone get the restic password?") || return 1
+  nas_backup_backend_ensure secrets "$secrets" || die "could not install $secrets CLI; fix and re-run: omaclone setup"
+  [[ "$secrets" == "keyring" ]] || config_set secrets.keyring_offer ""
+  nas_backup_backend_run secrets "$secrets" setup
+  _maybe_generate_restic_password
+}
+
+_setup_reenter_transport_secrets() {
+  local backend keys key
+  backend=$(config_get transport.backend)
+  [[ -n "$backend" ]] || return 1
+  keys=$(nas_backup_backend_run transport "$backend" credential-keys 2>/dev/null || true)
+  [[ -n "${keys//[$'\n' ]/}" ]] || return 1
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    transport_secret_prompt_and_store "$key" "$key" || return 1
+  done <<< "$keys"
+}
+
+_setup_ensure_transport() {
+  local backend picked
+  backend=$(config_get transport.backend)
+  [[ -n "$backend" ]] || die "no transport configured; run: omaclone setup"
+  while true; do
+    if nas_backup_backend_run transport "$backend" ready; then
+      return 0
+    fi
+    nas_backup_backend_run transport "$backend" mount 2>/dev/null || true
+    if nas_backup_backend_run transport "$backend" ready; then
+      return 0
+    fi
+    if ! is_tty || ! have gum; then
+      die "transport '$backend' is not ready"
+    fi
+    picked=$(printf '%s\n' \
+      "Retry connecting" \
+      "Re-enter destination passwords / keys" \
+      "Continue later" \
+      | gum choose --header="Clone location is not ready") || return 1
+    case "$picked" in
+      Retry*) continue ;;
+      Re-enter*)
+        if ! _setup_reenter_transport_secrets; then
+          tui_note "This destination has no stored keys to update (or entry was cancelled)."
+        fi
+        ;;
+      Continue*)
+        tui_note "Destination is saved. Run: omaclone setup"
+        return 1
+        ;;
+    esac
+  done
+}
+
+_setup_continue() {
+  local secrets transport notify
+  transport=$(config_get transport.backend)
+  if [[ -n "$transport" ]]; then
+    nas_backup_backend_ensure transport "$transport" || die "could not ensure $transport CLI; fix and re-run: omaclone setup"
+  fi
+  if [[ -n "$(config_get secrets.backend)" ]]; then
+    secrets=$(config_get secrets.backend)
+    nas_backup_backend_ensure secrets "$secrets" || die "could not ensure $secrets CLI; fix and re-run: omaclone setup"
+  else
+    _setup_secrets || return 1
+  fi
+  if [[ -n "$(config_get notify.backend)" ]]; then
+    notify=$(config_get notify.backend)
+    nas_backup_backend_ensure notify "$notify" || die "could not ensure $notify CLI; fix and re-run: omaclone setup"
+  else
+    local notify
+    notify=$(nas_backup_backend_choose_all notify "Notifications")
+    nas_backup_backend_ensure notify "$notify" || die "could not install $notify CLI; fix and re-run: omaclone setup"
+    nas_backup_backend_run notify "$notify" setup 2>/dev/null || true
+    config_set notify.backend "$notify"
+  fi
+  if [[ -z "$(config_get restore.profile)" ]]; then
+    config_set restore.profile portable
+  fi
+  if [[ -z "$(config_get retention.preset)" ]]; then
+    local keep
+    keep=$(choose_retention_preset "How long should clones be kept?")
+    config_set retention.preset "$keep"
+    tui_note "Keeping: $(retention_label "$keep")"
+  fi
+  _setup_init_repo || return 0
+  if [[ -z "$(config_get locations.ids)" ]]; then
+    _setup_register_location
+  fi
+
+  if [[ -L "$HOME/.local/bin/omaclone" ]]; then
+    location_schedule_apply
+  elif tui_confirm "Install the PATH symlink and bar plugin?"; then
+    cmd_install
+  else
+    location_schedule_apply
+  fi
+
+  local card
+  card=$(write_recovery_card)
+  tui_header "Recovery card"
+  cat "$card"
+  tui_note "Saved to $card — keep it with the restic password. It contains no secrets."
+  nas_backup_backend_run transport "$(config_get transport.backend)" bootstrap-install 2>/dev/null || true
+
+  if tui_confirm "Run the first clone now?"; then
+    cmd_backup
+  fi
+}
+
+cmd_setup() {
+  require_core_deps
+  require_gum
+  migrate_locations
+
+  local sub="${1:-}"
+  case "$sub" in
+    secrets)
+      tui_header "Omaclone setup — reconfigure password source"
+      _setup_secrets || return
+      password_load || return 0
+      password_cleanup
+      tui_note "Password source is ready."
+      return
+      ;;
+    continue)
+      tui_header "Omaclone setup — resume"
+      _setup_continue; return
+      ;;
+  esac
+
+  if [[ -n "$sub" ]]; then
+    die "usage: omaclone setup [secrets|continue]"
+  fi
+
+  tui_header "Omaclone setup"
+  tui_note "This writes ~/.config/omaclone/config.toml. It never stores the restic password."
+
+  if [[ -n "$(config_get transport.backend)" && -z "$(config_get restic.repo)" ]]; then
+    tui_note "Destination was not fully configured. Re-picking location…"; _setup_pick_destination; _setup_continue; return
+  fi
+
+  if setup_is_unfinished; then
+    local choice
+    choice=$(printf '%s\n' \
+      "Continue setup" \
+      "Change how omaclone gets the restic password" \
+      "Replace this location's destination" \
+      "Start over" \
+      | gum choose --header="Omaclone setup is unfinished") || return 1
+    case "$choice" in
+      Continue*)
+        local resume_msg="Continuing setup"
+        if [[ -z "$(config_get secrets.backend)" ]]; then
+          resume_msg="Configuring password source…"
+        elif ! repo_initialized; then
+          resume_msg="Initializing restic repository…"
+        elif [[ -z "$(config_get locations.ids)" ]]; then
+          resume_msg="Registering backup location…"
+        fi
+        tui_note "$resume_msg"; _setup_continue; return ;;
+      Change*)
+        _setup_secrets
+        password_load || return 0
+        password_cleanup
+        tui_note "Password source updated. Continuing setup…"; _setup_continue; return
+        ;;
+      Replace*)
+        _setup_pick_destination
+        _setup_init_repo || return 0
+        location_save_current "$(location_active_id)"
+        location_schedule_apply
+        return
+        ;;
+      Start*)
+        tui_confirm "This will reset setup state. Config files are preserved." || return 0
+        ;;
+    esac
+  elif [[ -n "$(config_get transport.backend)" ]]; then
+    local next
+    next=$(printf '%s\n' \
+      "Add another clone location" \
+      "Switch clone location" \
+      "Replace this location's destination" \
+      "Restore from an existing clone" \
+      "Change how omaclone gets the restic password" \
+      | gum choose --header="Omaclone is already configured")
+    case "$next" in
+      Add*) cmd_location add; return ;;
+      Switch*) cmd_location switch; return ;;
+      Replace*)
+        _setup_pick_destination
+        _setup_init_repo || return 0
+        location_save_current "$(location_active_id)"
+        location_schedule_apply
+        return
+        ;;
+      Restore*) cmd_restore; return ;;
+      Change*)
+        _setup_secrets
+        password_load || return 0
+        password_cleanup
+        return
+        ;;
+    esac
+  fi
+
+  local intent
+  intent=$(printf '%s\n' "Create a clone" "Restore from an existing clone" \
+    | gum choose --header="What do you want to do?")
+  if [[ "$intent" == Restore* ]]; then
+    cmd_restore
+    return
+  fi
+
+  _setup_pick_destination
+  _setup_continue
+}
+
+cmd_init() {
+  ensure_transport
+  password_load || return 0
+  transport_prepare_env
+  restic_exec init
+  password_cleanup
+  mark_repo_initialized
+  finish_transport
+}
+
+cmd_backup() {
+  local cron=0
+  [[ "${1:-}" == --cron ]] && cron=1
+  need_cmd restic jq
+  if (( cron )); then
+    ensure_transport --cron
+  else
+    ensure_transport
+  fi
+
+  if (( cron )) && [[ "$(config_get secrets.backend)" == prompt ]]; then
+    write_last_result skip "Automatic clone skipped: prompt backend needs a terminal"
+    notify "Omaclone skipped" "The prompt password backend cannot run unattended." low
+    log "skipping: prompt backend cannot run from a timer"
+    exit 0
+  fi
+
+  if (( cron )); then
+    if sudo -n true >/dev/null 2>&1; then
+      log "running prep (sudo)…"
+      sudo -n "$ROOT/scripts/prep.sh" || log "cron: prep failed; cloning \$HOME only"
+    else
+      log "cron: skipping prep (sudo needs a password); cloning \$HOME only"
+    fi
+  else
+    log "running prep (sudo)…"
+    if ! sudo "$ROOT/scripts/prep.sh"; then
+      log "prep skipped; cloning \$HOME only"
+    fi
+  fi
+
+  if ! password_load; then
+    if (( cron )); then
+      write_last_result skip "Password is not available (unlock keyring or sign in)"
+      notify "Omaclone skipped" "Unlock the keyring or sign in to the password manager." low
+      log "skipping: password is not available"
+      exit 0
+    fi
+    return 0
+  fi
+  transport_prepare_env
+  local exclude="$ROOT/config/excludes.txt"
+  local host
+  host=$(hostname)
+  log "backing up $HOME → $(restic_repo)"
+  local errfile rc=0
+  errfile=$(mktemp -p "$(_password_tmpdir)" omaclone.restic.XXXXXX)
+  set +e
+  restic_exec backup "$HOME" \
+    --one-file-system \
+    --exclude-file="$exclude" \
+    --tag identity \
+    --tag omaclone \
+    --tag nas-backup \
+    --host "$host" \
+    --json 2>"$errfile" | restic_json_progress
+  rc=${PIPESTATUS[0]}
+  set -e
+  if (( rc == 0 )); then
+    collect_repo_stats || true
+  fi
+  finish_transport
+  password_cleanup
+
+  if (( rc != 0 )); then
+    local fail_msg
+    fail_msg=$(restic_summarize_fail "$rc" "$errfile")
+    rm -f "$errfile"
+    write_last_result fail "$fail_msg"
+    notify "Omaclone failed" "$fail_msg" critical
+    die "$fail_msg"
+  fi
+  rm -f "$errfile"
+
+  write_last_result ok "backup completed"
+  mark_repo_initialized
+  notify "Omaclone" "Identity clone finished."
+  write_recovery_card >/dev/null
+  nas_backup_backend_run transport "$(config_get transport.backend)" bootstrap-install 2>/dev/null || true
+}
+
+cmd_snapshots() {
+  ensure_transport
+  password_load || return 0
+  transport_prepare_env
+  restic_exec snapshots
+  password_cleanup
+  finish_transport
+}
+
+cmd_check() {
+  ensure_transport
+  password_load || return 0
+  transport_prepare_env
+  restic_exec check
+  password_cleanup
+  finish_transport
+}
+
+cmd_prune() {
+  ensure_transport
+  password_load || return 0
+  transport_prepare_env
+  local args=()
+  mapfile -t args < <(retention_forget_args)
+  restic_exec forget --prune "${args[@]}" --tag identity
+  collect_repo_stats || true
+  password_cleanup
+  finish_transport
+}
+
+cmd_forget() {
+  local all=0 yes=0
+  local ids=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all) all=1 ;;
+      --yes) yes=1 ;;
+      -h|--help)
+        printf '%s\n' "usage: omaclone forget [ID...] [--all] [--yes]"
+        return 0
+        ;;
+      -*) die "unknown forget option: $1" ;;
+      *) ids+=("$1") ;;
+    esac
+    shift
+  done
+  ensure_transport
+  password_load || return 0
+  transport_prepare_env
+  local table n
+  table=$(restic_exec snapshots --json)
+  n=$(printf '%s' "$table" | jq 'length')
+  [[ "$n" != 0 && "$n" != "null" ]] || die "no clones in $(restic_repo)"
+  if (( all )); then
+    mapfile -t ids < <(printf '%s' "$table" | jq -r '.[].short_id')
+  elif ((${#ids[@]} == 0)); then
+    require_gum
+    local lines picked
+    lines=$(printf '%s' "$table" | jq -r '.[] | "\(.short_id)  \(.time)  \(.hostname)"')
+    picked=$(printf '%s\n' "$lines" | gum choose --no-limit --header="Clones to remove") || die "aborted"
+    ids=()
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && ids+=("${line%% *}")
+    done <<< "$picked"
+  fi
+  ((${#ids[@]})) || die "no clones selected"
+  if (( ! yes )); then
+    require_gum
+    tui_confirm "Remove ${#ids[@]} clone(s) from this location? This cannot be undone." || die "aborted"
+  fi
+  restic_exec forget --prune "${ids[@]}"
+  collect_repo_stats || true
+  password_cleanup
+  finish_transport
+}
+
+choose_retention_preset() {
+  local header="${1:-How long should clones be kept?}"
+  local current id lines=()
+  current=$(retention_preset)
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    if [[ "$id" == "$current" ]]; then
+      lines+=("$id — $(retention_label "$id") (current)")
+    else
+      lines+=("$id — $(retention_label "$id")")
+    fi
+  done < <(retention_ids)
+  require_gum
+  local picked
+  picked=$(printf '%s\n' "${lines[@]}" | gum choose --header="$header") || return 1
+  printf '%s\n' "${picked%% *}"
+}
+
+cmd_retention() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    ""|show)
+      printf 'preset: %s\nkeep: %s\n' "$(retention_preset)" "$(retention_label)"
+      ;;
+    set)
+      local preset="${1:-}" yes=0
+      shift || true
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --yes) yes=1 ;;
+          *) die "unknown retention option: $1" ;;
+        esac
+        shift
+      done
+      if [[ -z "$preset" ]]; then
+        preset=$(choose_retention_preset "Choose a keep plan")
+      fi
+      local known=0 id
+      while IFS= read -r id; do
+        [[ "$id" == "$preset" ]] && known=1
+      done < <(retention_ids)
+      (( known )) || die "unknown retention preset: $preset (last-5|week|month|quarter|year|standard)"
+      local current
+      current=$(retention_preset)
+      if [[ "$preset" == "$current" ]]; then
+        tui_note "Already keeping: $(retention_label "$preset")"
+        return 0
+      fi
+      if (( ! yes )); then
+        require_gum
+        tui_note "Current: $(retention_label "$current")"
+        tui_note "New:     $(retention_label "$preset")"
+        tui_confirm "Apply this plan and prune clones that fall outside it?" || die "aborted"
+      fi
+      config_set retention.preset "$preset"
+      log "retention set to $preset ($(retention_label "$preset"))"
+      cmd_prune
+      ;;
+    *)
+      die "usage: omaclone retention [show|set PRESET] [--yes]"
+      ;;
+  esac
+}
+
+_restore_pick_snapshot() {
+  local requested="${1:-}"
+  if [[ -n "$requested" ]]; then
+    printf '%s\n' "$requested"
+    return 0
+  fi
+  local table
+  table=$(restic_exec snapshots --json)
+  if [[ "$(printf '%s' "$table" | jq 'length')" == 0 ]]; then
+    die "no snapshots in $(restic_repo)"
+  fi
+  require_gum
+  local lines picked
+  lines=$(printf '%s' "$table" | jq -r '.[] | "\(.short_id)  \(.time)  \(.hostname)  \(.paths | join(","))"')
+  picked=$(printf '%s\n' "$lines" | gum choose --header="Choose snapshot")
+  printf '%s\n' "${picked%% *}"
+}
+
+_home_is_lived_in() {
+  ! fresh_home
+}
+
+restore_choose_location() {
+  require_gum
+  local recs=() labels=() rec label picked i
+  while IFS= read -r rec; do
+    [[ -z "$rec" ]] && continue
+    recs+=("$rec")
+    label=$(printf '%s' "$rec" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("label") or d.get("uri") or "")')
+    labels+=("$label")
+  done < <(python3 "$ROOT/scripts/discover_bootstrap.py")
+  labels+=("NAS (NFS / SMB / SFTP)")
+  labels+=("Extra disk or USB")
+  labels+=("Cloud (S3-compatible)")
+  labels+=("Local path")
+  picked=$(printf '%s\n' "${labels[@]}" | gum choose --header="Where is the existing clone?")
+  for i in "${!recs[@]}"; do
+    if [[ "${labels[$i]}" == "$picked" ]]; then
+      local cfgpath
+      cfgpath=$(printf '%s' "${recs[$i]}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("config") or "")')
+      if [[ -n "$cfgpath" && -f "$cfgpath" ]]; then
+        mkdir -p "$NAS_BACKUP_USER_CONFIG_DIR"
+        cp "$cfgpath" "$NAS_BACKUP_CONFIG"
+        chmod 600 "$NAS_BACKUP_CONFIG"
+        tui_note "Loaded config from $cfgpath"
+        return 0
+      fi
+    fi
+  done
+  local transport
+  case "$picked" in
+    NAS*)
+      config_set destination.profile nas
+      transport=$(nas_backup_backend_choose transport "How do you reach the NAS?" nfs cifs sftp)
+      ;;
+    Extra*)
+      config_set destination.profile disk
+      transport=disk
+      ;;
+    Cloud*)
+      config_set destination.profile cloud
+      transport=s3
+      ;;
+    *)
+      config_set destination.profile local
+      transport=local
+      ;;
+  esac
+  nas_backup_backend_run transport "$transport" setup
+}
+
+_restore_find_home() {
+  local staging="$1"
+  local src="$staging$HOME"
+  if [[ -d "$src" ]]; then
+    printf '%s\n' "$src"
+    return 0
+  fi
+  src="$staging/home/$USER"
+  if [[ -d "$src" ]]; then
+    printf '%s\n' "$src"
+    return 0
+  fi
+  local homes=()
+  local d
+  for d in "$staging/home"/*; do
+    [[ -d "$d" ]] && homes+=("$d")
+  done
+  if ((${#homes[@]} == 1)); then
+    tui_note "Snapshot home is ${homes[0]#"$staging"}; remapping onto $HOME"
+    printf '%s\n' "${homes[0]}"
+    return 0
+  fi
+  return 1
+}
+
+cmd_restore() {
+  local same_machine=0 snapshot=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --same-machine) same_machine=1 ;;
+      --snapshot)
+        [[ $# -ge 2 ]] || die "omaclone restore --snapshot requires an ID"
+        snapshot="$2"
+        shift
+        ;;
+      *) die "unknown restore option: $1" ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$(config_get transport.backend)" ]]; then
+    restore_choose_location
+  fi
+
+  require_restore_deps
+  require_gum
+  need_cmd restic jq rsync
+  if [[ -z "$(config_get secrets.backend)" ]]; then
+    _setup_secrets || return 1
+  fi
+  ensure_transport
+  password_load || return 0
+  transport_prepare_env
+
+  local id
+  id=$(_restore_pick_snapshot "$snapshot")
+  [[ -n "$id" ]] || die "no snapshot selected"
+
+  if _home_is_lived_in; then
+    require_gum
+    tui_error "Home looks lived-in. Restoring will overlay $HOME."
+    local phrase
+    phrase=$(gum input --placeholder "Type RESTORE to continue" </dev/tty)
+    [[ "$phrase" == RESTORE ]] || die "aborted"
+  fi
+
+  local staging
+  staging=$(mktemp -d "${TMPDIR:-/tmp}/omaclone-restore.XXXXXX")
+  chmod 700 "$staging"
+  trap 'password_cleanup; rm -rf "'"$staging"'"; finish_transport' EXIT
+
+  log "restoring snapshot $id to $staging…"
+  set +e
+  restic_exec restore "$id" --target "$staging" --json | restic_json_progress
+  local rc=${PIPESTATUS[0]}
+  set -e
+  (( rc == 0 )) || die "restic restore failed"
+
+  local src
+  src=$(_restore_find_home "$staging") || die "restored tree did not contain a home directory"
+
+  log "rsync into $HOME…"
+  local rsync_excludes=()
+  local rel
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    rsync_excludes+=(--exclude "$rel")
+  done < <(home_foreign_mounts)
+  rsync -aH --info=progress2 \
+    "${rsync_excludes[@]}" \
+    "$src"/ "$HOME"/
+
+  local etc_tar
+  if etc_tar=$(staging_file etc.tar); then
+    local etc_dir="$staging/etc-extract"
+    mkdir -p "$etc_dir"
+    tar -C "$etc_dir" -xf "$etc_tar"
+    local allow="$ROOT/config/etc-restore.allow"
+    if (( same_machine )) || [[ "$(config_get restore.profile)" == same-machine ]]; then
+      log "same-machine: still refusing fstab/Limine/LUKS; applying allowlist only"
+    fi
+    while IFS= read -r rel || [[ -n "$rel" ]]; do
+      [[ -z "$rel" || "$rel" == \#* ]] && continue
+      if ! etc_rel_ok "$rel"; then
+        log "skip forbidden /etc path: $rel"
+        continue
+      fi
+      if [[ -e "$etc_dir/etc/$rel" ]]; then
+        sudo mkdir -p "/etc/$(dirname "$rel")"
+        sudo cp -a "$etc_dir/etc/$rel" "/etc/$rel"
+        log "restored /etc/$rel"
+      fi
+    done <"$allow"
+  fi
+
+  local idlist
+  if idlist=$(staging_file pkglist-identity.txt) && [[ -s "$idlist" ]]; then
+    tui_note "Identity packages from the clone:"
+    cat "$idlist" >&2 || true
+    if tui_confirm "Install these packages with pacman now?"; then
+      log "installing identity packages…"
+      sudo pacman -S --needed --noconfirm -- $(grep -v '^$' "$idlist" | tr '\n' ' ') || true
+    else
+      log "skipped identity package install"
+    fi
+  fi
+  local aur
+  if aur=$(staging_file pkglist-aur.txt) && [[ -s "$aur" ]] && have yay; then
+    if tui_confirm "Install AUR identity packages with yay now?"; then
+      log "installing AUR identity packages…"
+      local pkg
+      while IFS= read -r pkg; do
+        [[ -z "$pkg" ]] && continue
+        if match_hardware_pkg "$pkg"; then
+          log "skip AUR hardware package: $pkg"
+          continue
+        fi
+        yay -S --needed --noconfirm "$pkg" || true
+      done <"$aur"
+    else
+      log "skipped AUR package install"
+    fi
+  fi
+  local hwlist
+  if hwlist=$(staging_file pkglist-hardware.txt) && [[ -s "$hwlist" ]]; then
+    tui_note "Hardware packages were NOT installed (portable restore):"
+    cat "$hwlist" >&2 || true
+  fi
+
+  loginctl enable-linger "$USER" 2>/dev/null || true
+  systemctl --user daemon-reload 2>/dev/null || true
+  local units_file unit
+  if units_file=$(staging_file user-units-enabled.txt); then
+    while IFS= read -r unit || [[ -n "$unit" ]]; do
+      unit="${unit##*/}"
+      unit="${unit%% *}"
+      [[ "$unit" == *.service || "$unit" == *.timer ]] || continue
+      [[ "$unit" == UNIT || "$unit" == UNITFILE ]] && continue
+      if match_denied_unit "$unit"; then
+        log "skip machine-local unit: $unit"
+        continue
+      fi
+      log "enable user unit $unit"
+      systemctl --user enable --now "$unit" 2>/dev/null || true
+    done <"$units_file"
+  fi
+
+  password_cleanup
+  finish_transport
+  rm -rf "$staging"
+  trap '_nas_backup_on_exit' EXIT INT TERM HUP
+
+  tui_header "Restore finished"
+  cat <<EOF
+Reboot, then:
+  • Unlock your password manager / keyring
+  • Steam games and Proton saves are not in the clone; use Steam Cloud or re-download
+  • ollama pull for local models
+  • Re-enroll fingerprint if this machine has a reader
+EOF
+}
+
+cmd_status() {
+  local json=0
+  case "${1:-}" in
+    --ack) write_issue_ack; return 0 ;;
+    --json) json=1 ;;
+    "" ) ;;
+    *) die "usage: omaclone status [--json|--ack]" ;;
+  esac
+  local repo transport secrets ready=false status="unknown" message="" unix=0
+  repo=$(config_get restic.repo)
+  transport=$(config_get transport.backend)
+  secrets=$(config_get secrets.backend)
+  if [[ -n "$transport" ]] && nas_backup_backend_run transport "$transport" ready >/dev/null 2>&1; then
+    ready=true
+  fi
+  local last="" loc_id=""
+  loc_id=$(location_active_id 2>/dev/null || true)
+  if [[ -n "$loc_id" && -f "$NAS_BACKUP_STATE_DIR/last-result-${loc_id}.json" ]]; then
+    last="$NAS_BACKUP_STATE_DIR/last-result-${loc_id}.json"
+  elif [[ -f "$NAS_BACKUP_STATE_DIR/last-result.json" ]]; then
+    local _file_loc
+    _file_loc=$(jq -r '.location // ""' "$NAS_BACKUP_STATE_DIR/last-result.json" 2>/dev/null || true)
+    if [[ -z "$_file_loc" || "$_file_loc" == "$loc_id" ]]; then
+      last="$NAS_BACKUP_STATE_DIR/last-result.json"
+    fi
+  elif [[ ! -f "$NAS_BACKUP_STATE_DIR/last-result-${loc_id}.json" ]]; then
+    if [[ -n "$loc_id" ]]; then
+      for _legacy in "${_legacy_state_dirs[@]:-}"; do
+        if [[ -f "$_legacy/last-result-${loc_id}.json" ]]; then
+          last="$_legacy/last-result-${loc_id}.json"
+          break
+        fi
+      done
+    fi
+  fi
+  if [[ -z "$last" ]]; then
+    :
+  elif [[ -f "$last" ]]; then
+    status=$(jq -r '.status // "unknown"' "$last" 2>/dev/null || echo unknown)
+    message=$(jq -r '.message // empty' "$last" 2>/dev/null || true)
+    unix=$(jq -r '.unix // 0' "$last" 2>/dev/null || echo 0)
+  elif [[ -z "$repo" ]]; then
+    status=unconfigured
+  fi
+  local age="$status"
+  if [[ "${unix:-0}" -gt 0 ]]; then
+    local delta=$(( $(date +%s) - unix ))
+    if (( delta < 90 )); then age="just now"
+    elif (( delta < 3600 )); then age="$((delta / 60))m ago"
+    elif (( delta < 86400 )); then age="$((delta / 3600))h ago"
+    else age="$((delta / 86400))d ago"
+    fi
+  fi
+  if [[ "$status" == skip && "$age" == skip ]]; then
+    age="skipped"
+  fi
+  local ok=false
+  [[ "$status" == ok ]] && ok=true
+  local configured=false setupComplete=false
+  [[ -n "$repo" ]] && configured=true
+  if setup_is_configured && ! setup_is_unfinished; then
+    setupComplete=true
+  fi
+  local acked=false
+  if [[ "$status" == fail ]] && issue_is_acked "${unix:-0}" "$loc_id"; then
+    acked=true
+  fi
+  local loc_json connected=false watchPath="" _conn=""
+  loc_json=$(location_list_json 2>/dev/null || echo '[]')
+  [[ "$loc_json" == \[* ]] || loc_json='[]'
+  _conn=$(printf '%s' "$loc_json" | jq -r --arg id "$loc_id" \
+    '(map(select(.id == $id)) | .[0].connected) // empty' 2>/dev/null || true)
+  if [[ "$_conn" == true ]]; then
+    connected=true
+  elif [[ "$_conn" == false ]]; then
+    connected=false
+  else
+    connected=$ready
+  fi
+  watchPath=$(printf '%s' "$loc_json" | jq -r --arg id "$loc_id" '
+    (map(select(.id == $id)) | .[0]) as $l
+    | if ($l | type) != "object" then empty
+      elif $l.backend == "disk" and ($l.uuid | tostring | length) > 0
+        then "/dev/disk/by-uuid/\($l.uuid)"
+      elif ($l.mountpoint | tostring | length) > 0 then $l.mountpoint
+      else empty end
+  ' 2>/dev/null || true)
+  local watchPaths='[]'
+  watchPaths=$(printf '%s' "$loc_json" | jq -c '
+    [ .[]
+      | select(.source != "discovered")
+      | if .backend == "disk" and (.uuid | tostring | length) > 0
+        then "/dev/disk/by-uuid/\(.uuid)"
+        elif (.mountpoint | tostring | length) > 0 then .mountpoint
+        else empty end
+    ] | unique
+  ' 2>/dev/null || true)
+  [[ "$watchPaths" == \[* ]] || watchPaths='[]'
+
+  local severity=ok issueTitle=""
+  if [[ -z "$repo" ]]; then
+    severity=warning
+    issueTitle="Not configured"
+    [[ -n "$message" ]] || message="Run Set up Omaclone to create or restore a clone."
+  elif setup_is_unfinished; then
+    severity=warning
+    issueTitle="Setup unfinished"
+    [[ -n "$message" ]] || message="Continue setup to finish this location."
+  elif [[ "$connected" != true ]]; then
+    severity=warning
+    issueTitle="Location not connected"
+    [[ -n "$message" ]] || message="Plug in or mount the clone location, then retry."
+  elif [[ "$status" == skip ]]; then
+    if issue_is_disconnect "$message"; then
+      severity=ok
+      issueTitle=""
+    else
+      severity=warning
+      issueTitle="Clone skipped"
+      [[ -n "$message" ]] || message="Automatic clone was skipped."
+    fi
+  elif [[ "$status" == fail && "$acked" != true ]]; then
+    severity=error
+    issueTitle="Last clone failed"
+    if [[ -z "$message" || "$message" == restic\ backup\ exited* ]]; then
+      message="The last identity clone failed. Retry from this pane, or run: omaclone clone"
+    fi
+  fi
+  local snap_count="" restore_bytes=0 packed_bytes=0 lc
+  read -r _ restore_bytes packed_bytes < <(read_repo_stats)
+  [[ "$restore_bytes" =~ ^[0-9]+$ ]] || restore_bytes=0
+  [[ "$packed_bytes" =~ ^[0-9]+$ ]] || packed_bytes=0
+  if [[ "$connected" != true ]]; then
+    restore_bytes=0
+    packed_bytes=0
+  elif lc=$(local_snapshot_count 2>/dev/null); then
+    snap_count="$lc"
+  fi
+  [[ "$snap_count" =~ ^[0-9]+$ ]] || snap_count=""
+  local snap_json=-1
+  [[ -n "$snap_count" ]] && snap_json="$snap_count"
+  local size_text packed_text
+  size_text=$(human_bytes "$restore_bytes")
+  packed_text=$(human_bytes "$packed_bytes")
+  local keep_id keep_label
+  keep_id=$(retention_preset)
+  keep_label=$(retention_label "$keep_id")
+  local _loc_id loc_label loc_sched
+  _loc_id=$(location_active_id)
+  loc_label=$(location_get "$_loc_id" label "$_loc_id")
+  loc_sched=$(location_get "$_loc_id" schedule on)
+  if (( json )); then
+    jq -n \
+      --argjson ok "$ok" \
+      --argjson configured "$configured" \
+      --argjson transportReady "$ready" \
+      --arg repo "$repo" \
+      --arg transport "$transport" \
+      --arg secrets "$secrets" \
+      --arg lastStatus "$status" \
+      --arg lastError "$message" \
+      --argjson lastBackupUnix "${unix:-0}" \
+      --arg statusText "$age" \
+      --argjson snapshotCount "$snap_json" \
+      --argjson repoSizeBytes "${restore_bytes:-0}" \
+      --arg repoSizeText "$size_text" \
+      --argjson packedSizeBytes "${packed_bytes:-0}" \
+      --arg packedSizeText "$packed_text" \
+      --arg retentionPreset "$keep_id" \
+      --arg retentionLabel "$keep_label" \
+      --arg locationId "$loc_id" \
+      --arg locationLabel "$loc_label" \
+      --arg locationSchedule "$loc_sched" \
+      --argjson locations "$loc_json" \
+      --argjson setupComplete "$setupComplete" \
+      --argjson connected "$connected" \
+      --arg watchPath "$watchPath" \
+      --argjson watchPaths "$watchPaths" \
+      --arg severity "$severity" \
+      --arg issueTitle "$issueTitle" \
+      --argjson issueAcked "$acked" \
+      '{ok:$ok,configured:$configured,transportReady:$transportReady,repo:$repo,transport:$transport,secrets:$secrets,lastStatus:$lastStatus,lastError:$lastError,lastBackupUnix:$lastBackupUnix,statusText:$statusText,snapshotCount:$snapshotCount,repoSizeBytes:$repoSizeBytes,repoSizeText:$repoSizeText,packedSizeBytes:$packedSizeBytes,packedSizeText:$packedSizeText,retentionPreset:$retentionPreset,retentionLabel:$retentionLabel,locationId:$locationId,locationLabel:$locationLabel,locationSchedule:$locationSchedule,locations:$locations,setupComplete:$setupComplete,connected:$connected,watchPath:$watchPath,watchPaths:$watchPaths,severity:$severity,issueTitle:$issueTitle,issueAcked:$issueAcked}'
+  else
+    local setup_text="complete"
+    [[ "$setupComplete" == false ]] && setup_text="unfinished"
+    printf 'ok: %s\nconfigured: %s\ntransportReady: %s\nrepo: %s\ntransport: %s\nsecrets: %s\nlastStatus: %s\nlastError: %s\nstatusText: %s\nclones: %s\nstorage: %s\npacked: %s\nkeep: %s\nlocation: %s (%s, %s)\nsetupComplete: %s\nconnected: %s\nwatchPath: %s\nseverity: %s\nissue: %s\n' \
+      "$ok" "$configured" "$ready" "$repo" "$transport" "$secrets" "$status" "$message" "$age" \
+      "${snap_count:--}" "$size_text" "$packed_text" "$keep_label" \
+      "$loc_id" "$loc_label" "$( [[ "$loc_sched" == on ]] && echo daily || echo manual )" \
+      "$setup_text" "$connected" "$watchPath" "$severity" "$issueTitle"
+  fi
+}
+
+cmd_location() {
+  migrate_locations
+  local sub="${1:-list}"
+  shift || true
+  case "$sub" in
+    list|"")
+      local json
+      json=$(location_list_json)
+      if [[ "${1:-}" == --json ]]; then
+        printf '%s\n' "$json"
+        return 0
+      fi
+      printf '%s\n' "$json" | jq -r '.[] | [
+          (if .active then "*" else " " end),
+          .id,
+          .label,
+          .backend,
+          (if .schedule == "on" then "daily" else "manual" end),
+          (if .connected then "connected" else "offline" end),
+          .source
+        ] | @tsv' | column -t -s $'\t'
+      ;;
+    add)
+      require_gum
+      local prev
+      prev=$(location_active_id)
+      _setup_pick_destination
+      _setup_init_repo || return 0
+      _setup_register_location
+      local id="$LOCATION_LAST_ID"
+      if [[ -n "$prev" && "$prev" != "$id" ]]; then
+        if tui_confirm "Make '$id' the active location now?"; then
+          location_activate "$id"
+        else
+          tui_note "Keeping '$prev' as the active location (daily clones follow that one)."
+          location_activate "$prev"
+        fi
+      else
+        location_schedule_apply "$id"
+      fi
+      ;;
+    switch)
+      local id="${1:-}" yes=0
+      shift || true
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --yes) yes=1 ;;
+          *) die "unknown location switch option: $1" ;;
+        esac
+        shift
+      done
+      local json
+      json=$(location_list_json)
+      if [[ -z "$id" ]]; then
+        require_gum
+        local lines picked
+        lines=$(printf '%s' "$json" | jq -r '.[] | "\(.id) — \(.label)  [\(.backend), \(if .schedule=="on" then "daily" else "manual" end), \(if .connected then "connected" else "offline" end)]\(if .active then "  (active)" else "" end)"')
+        picked=$(printf '%s\n' "$lines" | gum choose --header="Switch clone location")
+        id="${picked%% — *}"
+      fi
+      [[ -n "$id" ]] || die "no location selected"
+      if [[ "$id" == discovered:* ]]; then
+        _location_import_discovered "$id" "$json"
+        return
+      fi
+      location_has "$id" || die "unknown location: $id"
+      if [[ "$id" == "$(location_active_id)" ]]; then
+        location_schedule_apply "$id"
+        return 0
+      fi
+      if (( ! yes )); then
+        tui_confirm "Switch active clone location to '$id'?" || die "aborted"
+      fi
+      location_activate "$id"
+      if (( ! yes )); then
+        tui_note "Active location: $id ($(location_get "$id" label)) — $( [[ "$(location_get "$id" schedule)" == on ]] && echo "daily clones on" || echo "manual clones only" )"
+      fi
+      ;;
+    remove|forget)
+      local id="${1:-}" yes=0
+      shift || true
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --yes) yes=1 ;;
+          *) die "unknown location remove option: $1" ;;
+        esac
+        shift
+      done
+      if [[ -z "$id" ]]; then
+        require_gum
+        local json lines picked
+        json=$(location_list_json)
+        lines=$(printf '%s' "$json" | jq -r '.[] | select(.source != "discovered") | "\(.id) — \(.label)  [\(.backend), \(if .connected then "connected" else "offline" end)]"')
+        [[ -n "$lines" ]] || die "no saved locations"
+        picked=$(printf '%s\n' "$lines" | gum choose --header="Forget which location?") || die "aborted"
+        id="${picked%% — *}"
+      fi
+      [[ -n "$id" ]] || die "no location selected"
+      location_has "$id" || die "unknown location: $id"
+      if (( ! yes )); then
+        tui_confirm "Forget location '$id'? The drive is not erased." || die "aborted"
+      fi
+      location_drop "$id"
+      ;;
+    *)
+      die "usage: omaclone location [list|add|switch ID|remove ID] [--yes]"
+      ;;
+  esac
+}
+
+_location_import_discovered() {
+  local did="$1" json="$2"
+  local mp cfg
+  mp="${did#discovered:}"
+  cfg=$(printf '%s' "$json" | jq -r --arg id "$did" '.[] | select(.id==$id) | .config // empty')
+  [[ -n "$mp" && -d "$mp" ]] || die "discovered location is not mounted"
+  local backend="disk"
+  if [[ -n "$cfg" && -f "$cfg" ]]; then
+    backend=$(python3 "$ROOT/scripts/config.py" "$cfg" get transport.backend disk)
+    config_set transport.backend "$backend"
+    config_set transport.uri "$(python3 "$ROOT/scripts/config.py" "$cfg" get transport.uri)"
+    config_set transport.mountpoint "$(python3 "$ROOT/scripts/config.py" "$cfg" get transport.mountpoint "$mp")"
+    config_set restic.repo "$(python3 "$ROOT/scripts/config.py" "$cfg" get restic.repo "$mp/repo")"
+    config_set transport.uuid "$(python3 "$ROOT/scripts/config.py" "$cfg" get transport.uuid)"
+    config_set transport.mode "$(python3 "$ROOT/scripts/config.py" "$cfg" get transport.mode cold)"
+    config_set destination.profile "$(python3 "$ROOT/scripts/config.py" "$cfg" get destination.profile disk)"
+  else
+    config_set transport.backend disk
+    config_set transport.mountpoint "$mp"
+    config_set restic.repo "$mp/repo"
+    config_set transport.mode cold
+    config_set destination.profile disk
+  fi
+  local id uuid
+  uuid=$(config_get transport.uuid)
+  id=""
+  if [[ -n "$uuid" ]]; then
+    id=$(location_find_id_by_uuid "$uuid" || true)
+  fi
+  [[ -n "$id" ]] || id=$(location_slug "usb")
+  location_save_current "$id" "Discovered $(basename "$mp")" off
+  location_activate "$id"
+}
+
+cmd_install() {
+  mkdir -p "$HOME/.local/bin" "$HOME/.config/omarchy/plugins"
+  omaclone_link_cli
+  omaclone_link_plugin
+  omaclone_install_menu
+
+  if [[ "${OMACLONE_SKIP_SYSTEMD:-}" != 1 ]]; then
+    local unit_dir="$HOME/.config/systemd/user"
+    mkdir -p "$unit_dir"
+    systemctl --user disable --now nas-backup.timer nas-backup-prune.timer 2>/dev/null || true
+    rm -f "$unit_dir/nas-backup.service" "$unit_dir/nas-backup.timer" \
+      "$unit_dir/nas-backup-prune.service" "$unit_dir/nas-backup-prune.timer"
+    cp "$ROOT/systemd/omaclone.service" "$unit_dir/omaclone.service"
+    cp "$ROOT/systemd/omaclone.timer" "$unit_dir/omaclone.timer"
+    cp "$ROOT/systemd/omaclone-prune.timer" "$unit_dir/omaclone-prune.timer"
+    cp "$ROOT/systemd/omaclone-prune.service" "$unit_dir/omaclone-prune.service"
+    systemctl --user daemon-reload
+    location_schedule_apply
+    loginctl enable-linger "$USER" 2>/dev/null || true
+
+    if have omarchy; then
+      omarchy plugin enable "$PLUGIN_ID" --section right --after omarchy.tray 2>/dev/null || \
+        omarchy plugin enable "$PLUGIN_ID" --section right 2>/dev/null || \
+        omarchy-shell shell enablePlugin "$PLUGIN_ID" '{}' 2>/dev/null || \
+        log "enable the bar widget with: omarchy plugin enable $PLUGIN_ID"
+      omarchy menu refresh 2>/dev/null || true
+      omarchy-shell shell rescanPlugins 2>/dev/null || true
+    fi
+  fi
+  log "installed: ~/.local/bin/omaclone and plugin $PLUGIN_ID"
+}
+
+cmd_uninstall() {
+  if [[ "${OMACLONE_SKIP_SYSTEMD:-}" != 1 ]]; then
+    if have omarchy; then
+      omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || \
+        omarchy-shell shell setPluginEnabled "$PLUGIN_ID" false >/dev/null 2>&1 || true
+    fi
+    local unit_dir="$HOME/.config/systemd/user"
+    systemctl --user disable --now omaclone.timer omaclone-prune.timer 2>/dev/null || true
+    rm -f "$unit_dir/omaclone.service" "$unit_dir/omaclone.timer" \
+      "$unit_dir/omaclone-prune.service" "$unit_dir/omaclone-prune.timer"
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  omaclone_unlink_cli
+  omaclone_unlink_plugin
+  log "removed PATH command, timers, and plugin symlink"
+  log "config (~/.config/omaclone) and clones were not deleted"
+  log "if the bar widget is still a git clone: omarchy plugin remove $PLUGIN_ID"
+}
+
+cmd_doctor() {
+  echo "user: $(id)"
+  echo "config: $NAS_BACKUP_CONFIG"
+  echo "locations: ids=$(config_get locations.ids) active=$(location_active_id)"
+  location_list_json 2>/dev/null | jq -r '.[] | "  \(.id): \(.label) [\(.backend) \(.schedule) \(if .connected then "up" else "down" end)]\(if .active then " *" else "" end)"' 2>/dev/null || true
+  echo "destination: profile=$(config_get destination.profile) vendor=$(config_get destination.vendor)"
+  echo "transport: $(config_get transport.backend)  uri=$(config_get transport.uri)"
+  echo "mountpoint: $(config_get transport.mountpoint)"
+  echo "restic.repo: $(config_get restic.repo)"
+  echo "secrets: $(config_get secrets.backend)"
+  local vault_item_field
+  vault_item_field=$(config_get secrets.vault)
+  [[ -n "$vault_item_field" ]] && echo "secrets/vault: $vault_item_field"
+  vault_item_field=$(config_get secrets.item)
+  [[ -n "$vault_item_field" ]] && echo "secrets/item: $vault_item_field"
+  vault_item_field=$(config_get secrets.field)
+  [[ -n "$vault_item_field" ]] && echo "secrets/field: $vault_item_field"
+
+  local backend
+  backend=$(config_get secrets.backend)
+  case "$backend" in
+    pass-cli)
+      if pass-cli info >/dev/null 2>&1; then
+        echo "pass-cli: signed in"
+      else
+        echo "pass-cli: not signed in (pass-cli login)"
+      fi
+      ;;
+    1password)
+      if op account get >/dev/null 2>&1 || op whoami >/dev/null 2>&1; then
+        echo "op: signed in"
+      else
+        echo "op: not signed in (op signin)"
+      fi
+      ;;
+  esac
+
+  if setup_is_unfinished; then
+    echo "setup: unfinished — run: omaclone setup"
+  fi
+
+  local mp repo backend
+  mp=$(config_get transport.mountpoint)
+  repo=$(config_get restic.repo)
+  backend=$(config_get transport.backend)
+  if [[ -n "$mp" ]] && findmnt -n "$mp" >/dev/null 2>&1; then
+    echo "mounted: $(findmnt -n -o SOURCE,FSTYPE "$mp")"
+    echo "dir: $(stat -c 'uid=%u gid=%g mode=%A' "$mp" 2>/dev/null || echo missing)"
+    if dir_is_writable "$mp"; then
+      echo "writable: yes"
+    else
+      echo "writable: NO"
+      [[ "$backend" == nfs ]] && explain_nfs_uid_mismatch "$mp"
+    fi
+  elif [[ "$backend" == s3 || "$backend" == sftp ]]; then
+    echo "mounted: n/a (remote transport)"
+    if nas_backup_backend_run transport "$backend" ready; then
+      echo "ready: yes"
+    else
+      echo "ready: NO"
+    fi
+  else
+    echo "mounted: no"
+  fi
+  if [[ "$repo" == s3:* || "$repo" == sftp:* ]]; then
+    echo "restic repo: $repo"
+  elif [[ -f "$repo/config" ]]; then
+    echo "restic config: present at $repo"
+  else
+    echo "restic config: absent at $repo"
+  fi
+}
+
+backfill_destination_profile() {
+  if [[ -z "$(config_get retention.preset)" && -n "$(config_get transport.backend)" ]]; then
+    config_set retention.preset standard
+  fi
+  [[ -z "$(config_get destination.profile)" ]] || return 0
+  local t
+  t=$(config_get transport.backend)
+  case "$t" in
+    nfs|cifs|sftp) config_set destination.profile nas ;;
+    disk) config_set destination.profile disk ;;
+    s3) config_set destination.profile cloud ;;
+    local) config_set destination.profile local ;;
+  esac
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  backfill_destination_profile
+  migrate_locations
+  location_sync_active
+  case "$cmd" in
+    setup) cmd_setup "$@" ;;
+    doctor) cmd_doctor "$@" ;;
+    backup|clone) cmd_backup "$@" ;;
+    restore) cmd_restore "$@" ;;
+    snapshots) cmd_snapshots "$@" ;;
+    forget|remove) cmd_forget "$@" ;;
+    status) cmd_status "$@" ;;
+    install) cmd_install "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    check) cmd_check "$@" ;;
+    init) cmd_init "$@" ;;
+    prune) cmd_prune "$@" ;;
+    retention) cmd_retention "$@" ;;
+    location|locations) cmd_location "$@" ;;
+    -h|--help|help|"") usage ;;
+    *) die "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"

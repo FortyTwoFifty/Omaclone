@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "omaclone.plugin",
+  "name": "Omaclone",
+  "version": "1.4.1",
+  "author": "Brandon Proulx",
+  "license": "MIT",
+  "description": "Clone an Omarchy identity to NAS, extra disk, or S3-compatible cloud, then restore it after a reinstall.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Omaclone",
+    "description": "Show last identity clone, save a new one, or restore onto this machine.",
+    "category": "System",
+    "aliases": ["omaclone", "clone", "backup", "restic", "nas", "restore"],
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {
+      "refreshIntervalSec": 60
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 10,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 60
+      }
+    ]
+  }
+}

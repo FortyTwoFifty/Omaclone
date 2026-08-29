@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+
+source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+
+id() { printf '%s\n' cifs; }
+describe() { printf '%s\n' "SMB/CIFS (Synology, TrueNAS, Samba, …)"; }
+
+install() {
+  if command -v mount.cifs >/dev/null 2>&1; then return 0; fi
+  source "$NAS_BACKUP_ROOT/scripts/deps.sh" || true
+  deps_ensure_pacman cifs-utils mount.cifs
+}
+
+available() { command -v mount.cifs >/dev/null 2>&1; }
+
+capabilities() { printf '%s\n' "mount"; }
+credential_keys() { printf '%s\n' "smb-password"; }
+
+ensure_cifs_utils() {
+  if command -v mount.cifs >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Installing cifs-utils…" >&2
+  sudo pacman -S --needed --noconfirm cifs-utils
+}
+
+_smb_cred_file() {
+  local dir
+  if [[ -d /dev/shm && -w /dev/shm ]]; then
+    dir=/dev/shm
+  elif [[ -d /run/user/${UID:-$(id -u)} && -w /run/user/${UID:-$(id -u)} ]]; then
+    dir="/run/user/${UID:-$(id -u)}"
+  else
+    printf '%s\n' "no tmpfs directory for SMB credentials" >&2
+    return 1
+  fi
+  local f
+  f=$(mktemp -p "$dir" omaclone.smb.XXXXXX)
+  chmod 600 "$f"
+  printf '%s\n' "$f"
+}
+
+setup() {
+  ensure_cifs_utils
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+
+  local uri mountpoint user
+  uri=$(cfg transport.uri "")
+  mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+  user=$(cfg transport.username "$USER")
+  uri=$(gum_input "UNC path (//server/share)" "$uri")
+  mountpoint=$(gum_input "Local mountpoint" "$mountpoint")
+  user=$(gum_input "SMB username" "$user")
+  [[ -n "$uri" ]] || { printf '%s\n' "SMB path is required" >&2; exit 1; }
+  cfg_set transport.backend cifs
+  cfg_set transport.uri "$uri"
+  cfg_set transport.mountpoint "$mountpoint"
+  cfg_set transport.username "$user"
+  cfg_set restic.repo "${mountpoint%/}/omaclone/repo"
+
+  echo "Daily clones run only while this share is mounted. Use NFS automount for an always-on NAS." >&2
+  if ! transport_secret_get smb-password >/dev/null; then
+    echo "Store the SMB password in the keyring (not in config)." >&2
+    transport_secret_prompt_and_store smb-password "SMB password for $user"
+  elif command -v gum >/dev/null 2>&1 && gum confirm "Replace the stored SMB password?"; then
+    transport_secret_prompt_and_store smb-password "SMB password for $user"
+  fi
+}
+
+mount() {
+  ensure_cifs_utils
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+
+  local uri mountpoint user cred
+  uri=$(cfg transport.uri)
+  mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+  user=$(cfg transport.username "$USER")
+  if findmnt -n "$mountpoint" >/dev/null 2>&1; then
+    exit 0
+  fi
+  sudo_noninteractive mkdir -p "$mountpoint" || exit 1
+  cred=$(_smb_cred_file)
+  {
+    printf 'username=%s\n' "$user"
+    printf 'password='
+    transport_secret_get smb-password
+    printf '\n'
+  } >"$cred"
+  chmod 600 "$cred"
+  local rc=0
+  sudo_noninteractive mount -t cifs "$uri" "$mountpoint" \
+    -o "credentials=${cred},uid=$(id -u),gid=$(id -g),file_mode=0600,dir_mode=0700,_netdev" \
+    || rc=$?
+  if command -v shred >/dev/null 2>&1; then
+    shred -u "$cred" 2>/dev/null || rm -f "$cred"
+  else
+    : >"$cred"
+    rm -f "$cred"
+  fi
+  exit "$rc"
+}
+
+unmount() {
+  local mountpoint
+  mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+  sudo umount "$mountpoint" 2>/dev/null || true
+}
+
+ready() {
+  local mountpoint repo
+  mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+  repo=$(cfg restic.repo)
+  stat "$mountpoint" >/dev/null 2>&1 || true
+  findmnt -n "$mountpoint" >/dev/null 2>&1 || return 1
+  [[ -n "$repo" ]]
+}
+
+bootstrap-install() {
+  ready || mount
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  python3 "$NAS_BACKUP_ROOT/scripts/bootstrap_copy.py" "$NAS_BACKUP_ROOT" "$(omaclone_kit_dir "$(cfg transport.mountpoint /mnt/omaclone)")" "$NAS_BACKUP_CONFIG"
+}
+
+dispatch_transport "${1:-}"

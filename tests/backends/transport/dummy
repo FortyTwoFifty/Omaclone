@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+
+id() { printf '%s\n' dummy; }
+describe() { printf '%s\n' "Test dummy transport"; }
+available() { exit 0; }
+install() { return 0; }
+capabilities() { printf '%s\n' "mount discover"; }
+setup() { cfg_set transport.backend dummy; }
+mount() { exit 0; }
+unmount() { exit 0; }
+ready() { exit 0; }
+bootstrap-install() { exit 0; }
+discover() {
+  printf '%s\n' '{"id":"dummy","label":"Dummy backup","uri":"/tmp","hint":"test","config":""}'
+}
+
+dispatch_transport "${1:-}"

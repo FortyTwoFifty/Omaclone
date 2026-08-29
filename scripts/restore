@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set +o history 2>/dev/null || true
+unset HISTFILE
+set +x +v
+set -euo pipefail
+
+here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+
+if [[ -x "$here/omaclone/scripts/omaclone" ]]; then
+  ROOT="$here/omaclone"
+elif [[ -x "$here/scripts/omaclone" ]]; then
+  ROOT="$here"
+else
+  echo "omaclone: could not find the tool tree next to $0" >&2
+  echo "Expected $here/omaclone/scripts/omaclone" >&2
+  exit 1
+fi
+
+if [[ -f "$here/config.toml" ]]; then
+  export NAS_BACKUP_CONFIG="$here/config.toml"
+elif [[ -f "$(dirname "$ROOT")/config.toml" ]]; then
+  export NAS_BACKUP_CONFIG="$(dirname "$ROOT")/config.toml"
+fi
+
+need_pkgs=(restic jq gum rsync)
+transport=""
+if [[ -n "${NAS_BACKUP_CONFIG:-}" && -f "$NAS_BACKUP_CONFIG" ]]; then
+  transport=$(python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" get transport.backend "")
+fi
+
+case "$transport" in
+  nfs|"") need_pkgs+=(nfs-utils) ;;
+  cifs) need_pkgs+=(cifs-utils) ;;
+  sftp) need_pkgs+=(openssh) ;;
+  s3) ;;
+  disk|local) ;;
+esac
+
+missing=()
+for p in restic jq gum rsync; do
+  command -v "$p" >/dev/null 2>&1 || missing+=("$p")
+done
+case "$transport" in
+  nfs|"")
+    command -v mount.nfs4 >/dev/null 2>&1 || command -v mount.nfs >/dev/null 2>&1 || missing+=(nfs-utils)
+    ;;
+  cifs)
+    command -v mount.cifs >/dev/null 2>&1 || missing+=(cifs-utils)
+    ;;
+esac
+
+if ((${#missing[@]})); then
+  echo "Installing: ${missing[*]}"
+  sudo pacman -S --needed --noconfirm "${missing[@]}"
+fi
+
+export NAS_BACKUP_ROOT="$ROOT"
+[[ -x "$ROOT/scripts/omaclone" ]] || { echo "omaclone: missing $ROOT/scripts/omaclone" >&2; exit 1; }
+exec "$ROOT/scripts/omaclone" restore "$@"

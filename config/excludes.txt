@@ -1,0 +1,22 @@
+# Patterns are relative to $HOME (the restic backup root).
+# restic uses gitignore-style matching.
+
+/.cache
+/.local/share/Trash
+/.local/share/Steam
+/.steam
+/.ollama
+/.gvfs
+/.npm/_cacache
+/.local/share/uv/cache
+/.local/share/mise/downloads
+
+# Rebuildable trees
+**/node_modules
+**/.git/objects
+
+**/.Trash-*
+
+# Python bytecode
+__pycache__/
+**/*.pyc

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set +o history 2>/dev/null || true
+unset HISTFILE
+set +x +v
+set -euo pipefail
+here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+exec "$here/omaclone" "$@"

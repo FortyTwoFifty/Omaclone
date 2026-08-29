@@ -1,0 +1,6 @@
+# User units restore will not enable on a new machine.
+# One name per line. Shell-style globs are allowed (* ? []).
+# Names may be given with or without a .service/.timer suffix.
+
+*.mount
+*.automount

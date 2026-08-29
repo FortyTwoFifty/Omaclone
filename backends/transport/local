@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+
+source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+
+id() { printf '%s\n' local; }
+describe() { printf '%s\n' "Local path (already mounted)"; }
+available() { exit 0; }
+capabilities() { printf '%s\n' "mount"; }
+
+setup() {
+  local mountpoint repo
+  mountpoint=$(cfg transport.mountpoint "$HOME/Backups")
+  mountpoint=$(gum_input "Directory that holds the restic repo" "$mountpoint")
+  mkdir -p "$mountpoint"
+  repo=$(cfg restic.repo "$mountpoint/omaclone/repo")
+  repo=$(gum_input "Restic repo path" "$repo")
+  cfg_set transport.backend local
+  cfg_set transport.mountpoint "$mountpoint"
+  cfg_set restic.repo "$repo"
+}
+
+mount() { ready; }
+unmount() { exit 0; }
+
+ready() {
+  local repo
+  repo=$(cfg restic.repo)
+  [[ -n "$repo" && -d "$(dirname "$repo")" ]]
+}
+
+bootstrap-install() {
+  local dest
+  dest=$(cfg transport.mountpoint)
+  [[ -n "$dest" && -d "$dest" ]] || {
+    printf '%s\n' "transport.mountpoint is not a directory" >&2
+    exit 1
+  }
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  dest=$(omaclone_kit_dir "$dest")
+  python3 "$NAS_BACKUP_ROOT/scripts/bootstrap_copy.py" "$NAS_BACKUP_ROOT" "$dest" "$NAS_BACKUP_CONFIG"
+}
+
+dispatch_transport "${1:-}"

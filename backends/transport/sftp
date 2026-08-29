@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+
+source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+
+id() { printf '%s\n' sftp; }
+describe() { printf '%s\n' "SFTP (Synology, generic SSH, restic native)"; }
+install() {
+  if command -v ssh >/dev/null 2>&1 && command -v scp >/dev/null 2>&1; then return 0; fi
+  source "$NAS_BACKUP_ROOT/scripts/deps.sh" || true
+  deps_ensure_pacman openssh ssh
+}
+
+available() { command -v ssh >/dev/null 2>&1 && command -v scp >/dev/null 2>&1; }
+capabilities() { printf '%s\n' "remote"; }
+
+_ssh_target() {
+  local user host
+  user=$(cfg transport.username "$USER")
+  host=$(cfg transport.host)
+  printf '%s@%s\n' "$user" "$host"
+}
+
+_ssh_cmd() {
+  local port
+  port=$(cfg transport.port 22)
+  if [[ "$port" == 22 || -z "$port" ]]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=8 "$(_ssh_target)" "$@"
+  else
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -p "$port" "$(_ssh_target)" "$@"
+  fi
+}
+
+_scp_cmd() {
+  local port
+  port=$(cfg transport.port 22)
+  if [[ "$port" == 22 || -z "$port" ]]; then
+    scp -o BatchMode=yes "$@"
+  else
+    scp -o BatchMode=yes -P "$port" "$@"
+  fi
+}
+
+_restic_url() {
+  local user host port remote
+  user=$(cfg transport.username "$USER")
+  host=$(cfg transport.host)
+  port=$(cfg transport.port 22)
+  remote=$(cfg transport.remote_path)
+  remote="${remote%/}/repo"
+  if [[ "$port" == 22 || -z "$port" ]]; then
+    printf 'sftp:%s@%s:%s\n' "$user" "$host" "$remote"
+  elif [[ "$remote" == /* ]]; then
+    printf 'sftp://%s@%s:%s/%s\n' "$user" "$host" "$port" "$remote"
+  else
+    printf 'sftp://%s@%s:%s/%s\n' "$user" "$host" "$port" "$remote"
+  fi
+}
+
+setup() {
+  local host user port remote
+  host=$(cfg transport.host "")
+  user=$(cfg transport.username "$USER")
+  port=$(cfg transport.port 22)
+  remote=$(cfg transport.remote_path "/backup/omarchy")
+  host=$(gum_input "SSH host" "$host")
+  user=$(gum_input "SSH username" "$user")
+  port=$(gum_input "SSH port" "$port")
+  remote=$(gum_input "Remote directory (parent of the restic repo)" "$remote")
+  [[ -n "$host" ]] || { printf '%s\n' "host is required" >&2; exit 1; }
+  cfg_set transport.backend sftp
+  cfg_set transport.host "$host"
+  cfg_set transport.username "$user"
+  cfg_set transport.port "$port"
+  cfg_set transport.remote_path "$remote"
+  cfg_set restic.repo "$(_restic_url)"
+
+  echo "Checking SSH (keys only, BatchMode)…" >&2
+  if ! _ssh_cmd true; then
+    cat >&2 <<EOF
+Cannot log in to $user@$host with an SSH key.
+Install a key on the NAS (ssh-copy-id $user@$host) and re-run setup.
+Password SFTP is not used: it cannot run from the daily timer.
+EOF
+    exit 1
+  fi
+  _ssh_cmd "mkdir -p $(printf '%q' "$remote/repo")"
+}
+
+mount() { ready; }
+unmount() { exit 0; }
+
+ready() {
+  local host repo
+  host=$(cfg transport.host)
+  repo=$(cfg restic.repo)
+  [[ -n "$host" && -n "$repo" ]] || return 1
+  _ssh_cmd true
+}
+
+bootstrap-install() {
+  local remote dest_tmp
+  remote=$(cfg transport.remote_path)
+  [[ -n "$remote" ]] || { printf '%s\n' "transport.remote_path is empty" >&2; exit 1; }
+  dest_tmp=$(mktemp -d)
+  python3 "$NAS_BACKUP_ROOT/scripts/bootstrap_copy.py" "$NAS_BACKUP_ROOT" "$dest_tmp" "$NAS_BACKUP_CONFIG"
+  _ssh_cmd "mkdir -p $(printf '%q' "$remote")"
+  _scp_cmd -r "$dest_tmp/." "$(_ssh_target):$remote/"
+  rm -rf "$dest_tmp"
+}
+
+dispatch_transport "${1:-}"

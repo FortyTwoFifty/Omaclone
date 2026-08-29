@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+*.pem
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+/config.toml
+last-result*.json
+RECOVERY.md
+*.img

@@ -1,0 +1,71 @@
+{
+  "omaclone": {
+    "icon": "󰁯",
+    "label": "Omaclone",
+    "aliases": ["omaclone", "clone", "backup", "restic", "nas", "restore"],
+    "description": "Clone an Omarchy identity to NAS, extra disk, or cloud",
+    "when": "command -v omaclone"
+  },
+  "omaclone.clone": {
+    "icon": "󰁯",
+    "label": "Clone now",
+    "description": "Save an identity clone",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone clone'"
+  },
+  "omaclone.status": {
+    "icon": "󰋼",
+    "label": "Status",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone doctor'"
+  },
+  "omaclone.snapshots": {
+    "icon": "󰃮",
+    "label": "Clones",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone snapshots'"
+  },
+  "omaclone.forget": {
+    "icon": "󰆴",
+    "label": "Remove clones…",
+    "description": "Delete clones from this location",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone forget'"
+  },
+  "omaclone.location-remove": {
+    "icon": "󰆴",
+    "label": "Forget location…",
+    "description": "Drop a saved location without erasing the drive",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone location remove'"
+  },
+  "omaclone.location": {
+    "icon": "󰉌",
+    "label": "Switch location…",
+    "description": "NAS, USB, or cloud",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone location switch'"
+  },
+  "omaclone.location-add": {
+    "icon": "󰐕",
+    "label": "Add location…",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone location add'"
+  },
+  "omaclone.retention": {
+    "icon": "󰃰",
+    "label": "Keep plan…",
+    "description": "How long clones are retained",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone retention set'"
+  },
+  "omaclone.setup": {
+    "icon": "",
+    "label": "Set up Omaclone",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone setup'"
+  },
+  "omaclone.restore": {
+    "icon": "󰁯",
+    "label": "Restore…",
+    "description": "Clone this identity onto this machine",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone restore'"
+  },
+  "setup.omaclone": {
+    "icon": "󰁯",
+    "label": "Omaclone",
+    "target": "omaclone",
+    "when": "command -v omaclone"
+  }
+}

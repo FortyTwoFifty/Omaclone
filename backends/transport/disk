@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+
+source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+
+id() { printf '%s\n' disk; }
+describe() { printf '%s\n' "Extra disk (USB, 2nd drive, hybrid)"; }
+available() { exit 0; }
+capabilities() { printf '%s\n' "mount removable discover"; }
+
+_pick_device() {
+  local lines=() rec line label
+  while IFS= read -r rec; do
+    [[ -z "$rec" ]] && continue
+    line=$(python3 -c '
+import json,sys
+d=json.loads(sys.argv[1])
+bits=[d["path"], d.get("size") or "?", d.get("fstype") or "no-fs"]
+if d.get("label"): bits.append(d["label"])
+if d.get("model"): bits.append(d["model"])
+if d.get("tran"): bits.append(d["tran"])
+if d.get("mountpoint"): bits.append("at "+d["mountpoint"])
+print("  ".join(bits))
+' "$rec")
+    lines+=("$line|$rec")
+  done < <(python3 "$NAS_BACKUP_ROOT/scripts/disk_candidates.py")
+  if ((${#lines[@]} == 0)); then
+    printf '%s\n' "no extra disks found (the Omarchy system disk is never offered)" >&2
+    return 1
+  fi
+  if ! have_cmd gum; then
+    printf '%s\n' "${lines[0]#*|}"
+    return 0
+  fi
+  local choices=()
+  local l
+  for l in "${lines[@]}"; do
+    choices+=("${l%%|*}")
+  done
+  local picked
+  picked=$(printf '%s\n' "${choices[@]}" | gum choose --header="Which disk should hold the backup?") || return 1
+  for l in "${lines[@]}"; do
+    if [[ "${l%%|*}" == "$picked" ]]; then
+      printf '%s\n' "${l#*|}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_format_device() {
+  local path="$1" label="${2:-}"
+  if ! have_cmd gum; then
+    printf '%s\n' "refusing to format $path without gum confirmation" >&2
+    return 1
+  fi
+  gum style --foreground 196 "This will ERASE $path and create an ext4 filesystem."
+  if ! gum confirm "Format $path as ext4?"; then
+    return 1
+  fi
+  local phrase
+  phrase=$(gum input --placeholder "Type DESTROY to erase $path" </dev/tty)
+  [[ "$phrase" == DESTROY ]] || { printf '%s\n' "aborted" >&2; return 1; }
+  if [[ -n "$label" ]]; then
+    sudo mkfs.ext4 -F -L "$label" "$path"
+  else
+    sudo mkfs.ext4 -F "$path"
+  fi
+}
+
+setup() {
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+
+  local rec path uuid fstype mountpoint label
+  rec=$(_pick_device) || exit 1
+  path=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])')
+  uuid=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("uuid") or "")')
+  fstype=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("fstype") or "")')
+  label=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("label") or "")')
+
+  if [[ -n "$fstype" && -n "$uuid" ]]; then
+    if have_cmd gum; then
+      gum confirm "Use $path ($fstype${label:+, $label}) for clones? Existing files will not be erased." || exit 1
+    fi
+  else
+    echo "No filesystem on $path." >&2
+    label=$(gum input --placeholder "Volume label (default Omaclone)" --value "$label" </dev/tty)
+    _format_device "$path" "$label" || exit 1
+    rec=$(python3 "$NAS_BACKUP_ROOT/scripts/disk_candidates.py" | python3 -c '
+import json,sys
+want=sys.argv[1]
+for line in sys.stdin:
+    d=json.loads(line)
+    if d.get("path")==want:
+        print(line.strip()); break
+' "$path")
+    uuid=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("uuid") or "")')
+    fstype=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("fstype") or "ext4")')
+    [[ -n "$uuid" ]] || { printf '%s\n' "format did not produce a UUID" >&2; exit 1; }
+  fi
+
+  mountpoint=$(cfg transport.mountpoint "")
+  mountpoint=$(gum_input "Mountpoint for this disk (empty = desktop mount)" "$mountpoint")
+
+  cfg_set transport.backend disk
+  cfg_set transport.uuid "$uuid"
+  cfg_set transport.device "$path"
+  cfg_set transport.fstype "$fstype"
+  cfg_set transport.mountpoint "$mountpoint"
+  cfg_set transport.mode hybrid
+
+  if [[ -n "$mountpoint" ]]; then
+    cfg_set restic.repo "${mountpoint%/}/omaclone/repo"
+    sudo mkdir -p "$mountpoint"
+  fi
+}
+
+_disk_own() {
+  local path="$1"
+  [[ -n "$path" ]] || return 0
+  if mkdir -p "$path" 2>/dev/null && [[ -w "$path" ]]; then
+    return 0
+  fi
+  sudo_noninteractive mkdir -p "$path" || return 1
+  sudo_noninteractive chown "$(id -u):$(id -g)" "$path"
+}
+
+_disk_bind_repo() {
+  local live_target="$1" kit repo
+  [[ -n "$live_target" ]] || return 1
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  kit=$(omaclone_kit_dir "$live_target")
+  repo="$kit/repo"
+  cfg_set restic.repo "$repo"
+  _disk_own "$kit"
+  _disk_own "$repo"
+}
+
+mount() {
+  local uuid mountpoint fstype live_target
+  uuid=$(cfg transport.uuid)
+  mountpoint=$(cfg transport.mountpoint "")
+  fstype=$(cfg transport.fstype auto)
+  [[ -n "$uuid" ]] || { printf '%s\n' "transport.uuid is empty" >&2; exit 1; }
+
+  live_target=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1)
+  if [[ -n "$live_target" ]]; then
+    _disk_bind_repo "$live_target"
+    exit 0
+  fi
+
+  local src="/dev/disk/by-uuid/$uuid"
+  if [[ ! -e "$src" ]]; then
+    printf '%s\n' "backup disk UUID $uuid is not connected" >&2
+    exit 1
+  fi
+
+  if [[ -n "$mountpoint" ]]; then
+    sudo_noninteractive mkdir -p "$mountpoint" || exit 1
+    sudo_noninteractive mount -t "$fstype" -o noatime "$src" "$mountpoint" || exit 1
+  elif have_cmd udisksctl; then
+    udisksctl mount -b "$src" >/dev/null 2>&1 || { printf '%s\n' "udisksctl mount failed for $src" >&2; exit 1; }
+  else
+    printf '%s\n' "no mountpoint configured and udisksctl unavailable" >&2
+    exit 1
+  fi
+
+  live_target=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1)
+  if [[ -n "$live_target" ]]; then
+    _disk_bind_repo "$live_target"
+  fi
+}
+
+unmount() {
+  return 0
+}
+
+ready() {
+  local uuid live_target
+  uuid=$(cfg transport.uuid)
+  [[ -n "$uuid" ]] || return 1
+  [[ -e "/dev/disk/by-uuid/$uuid" ]] || return 1
+  live_target=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1)
+  [[ -n "$live_target" ]]
+}
+
+pre_restic() {
+  mount
+}
+
+post_restic() {
+  return 0
+}
+
+discover() {
+  python3 "$NAS_BACKUP_ROOT/scripts/discover_bootstrap.py"
+}
+
+bootstrap-install() {
+  ready || mount
+  local target dest
+  target=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$(cfg transport.uuid)" 2>/dev/null | head -n 1)
+  [[ -z "$target" ]] && target="$(cfg transport.mountpoint /mnt/omaclone)"
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  dest=$(omaclone_kit_dir "$target")
+  python3 "$NAS_BACKUP_ROOT/scripts/bootstrap_copy.py" "$NAS_BACKUP_ROOT" "$dest" "$NAS_BACKUP_CONFIG"
+}
+
+dispatch_transport "${1:-}"

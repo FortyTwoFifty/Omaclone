@@ -1,0 +1,4 @@
+# Paths relative to /etc that portable restore may copy onto a new machine.
+# Never add fstab, crypttab, hostname, mkinitcpio, Limine, or NetworkManager.
+
+fido2

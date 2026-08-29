@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+
+cmd="${1:-}"
+
+id() { printf '%s\n' notify-send; }
+describe() { printf '%s\n' "Desktop notification (notify-send)"; }
+install() {
+  if command -v notify-send >/dev/null 2>&1; then return 0; fi
+  source "$NAS_BACKUP_ROOT/scripts/deps.sh" || true
+  deps_ensure_pacman libnotify notify-send
+}
+
+available() { command -v notify-send >/dev/null 2>&1; }
+
+send() {
+  local title="${1:-Backup}"
+  local body="${2:-}"
+  local urgency="${3:-normal}"
+  notify-send --urgency="$urgency" --app-name=omaclone "$title" "$body" 2>/dev/null || true
+}
+
+case "$cmd" in
+  id) id ;;
+  describe) describe ;;
+  available) available ;;
+  install) install ;;
+  send) shift; send "$@" ;;
+  setup) exit 0 ;;
+  *) exit 2 ;;
+esac
