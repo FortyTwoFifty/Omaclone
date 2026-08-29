@@ -33,6 +33,7 @@ Item {
   property string switchError: ""
   property string severity: "ok"
   property string issueTitle: ""
+  property string issueKind: ""
   property bool issueAcked: false
   property bool connected: false
   property string watchPath: ""
@@ -136,6 +137,7 @@ Item {
     locationSchedule = String(parsed.locationSchedule || "on")
     severity = String(parsed.severity || "ok")
     issueTitle = String(parsed.issueTitle || "")
+    issueKind = String(parsed.issueKind || "")
     issueAcked = parsed.issueAcked === true
     connected = parsed.connected === true
     var nextWatch = String(parsed.watchPath || "")

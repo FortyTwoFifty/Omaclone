@@ -43,6 +43,7 @@ Panel {
     var base = bar ? bar.barForeground : Color.foreground
     if (backup.switching) return base
     if (backup.severity === "error") return root.urgent
+    if (backup.issueKind === "password_locked") return root.warning
     if (backup.severity === "warning") return Qt.darker(base, 1.55)
     return base
   }
@@ -570,13 +571,13 @@ Panel {
       }
 
       Row {
-        visible: banner.isError
+        visible: banner.isError || backup.issueKind === "password_locked"
         spacing: Style.space(8)
         width: parent.width
 
         ConfirmButton {
-          width: (bannerCol.width - Style.space(8)) / 2
-          label: "Retry clone"
+          width: banner.isError ? (bannerCol.width - Style.space(8)) / 2 : bannerCol.width
+          label: backup.issueKind === "password_locked" ? "Clone now" : "Retry clone"
           destructive: false
           onClicked: {
             backup.launchTui(["clone"])
@@ -584,6 +585,7 @@ Panel {
           }
         }
         ConfirmButton {
+          visible: banner.isError
           width: (bannerCol.width - Style.space(8)) / 2
           label: "Dismiss"
           destructive: false

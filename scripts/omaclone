@@ -518,8 +518,15 @@ cmd_init() {
 }
 
 cmd_backup() {
-  local cron=0
-  [[ "${1:-}" == --cron ]] && cron=1
+  local cron=0 after_unlock=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cron) cron=1 ;;
+      --after-unlock) cron=1; after_unlock=1 ;;
+      *) die "unknown clone option: $1" ;;
+    esac
+    shift
+  done
   need_cmd restic jq
   if (( cron )); then
     ensure_transport --cron
@@ -528,8 +535,8 @@ cmd_backup() {
   fi
 
   if (( cron )) && [[ "$(config_get secrets.backend)" == prompt ]]; then
-    write_last_result skip "Automatic clone skipped: prompt backend needs a terminal"
-    notify "Omaclone skipped" "The prompt password backend cannot run unattended." low
+    write_last_result skip "Automatic clone skipped: prompt backend needs a terminal" password
+    notify "Omaclone skipped" "The last clone did not run: the prompt password backend cannot run unattended." low
     log "skipping: prompt backend cannot run from a timer"
     exit 0
   fi
@@ -550,8 +557,15 @@ cmd_backup() {
 
   if ! password_load; then
     if (( cron )); then
-      write_last_result skip "Password is not available (unlock keyring or sign in)"
-      notify "Omaclone skipped" "Unlock the keyring or sign in to the password manager." low
+      local secrets_backend
+      secrets_backend=$(config_get secrets.backend)
+      write_last_result skip "Password is not available (unlock keyring or sign in)" password
+      if [[ "$secrets_backend" == keyring && "$after_unlock" -eq 0 ]]; then
+        schedule_keyring_retry
+        notify "Omaclone skipped" "The last clone did not run because the keyring was locked. It will run when you unlock it." low
+      else
+        notify "Omaclone skipped" "The last clone did not run because the password manager was locked." low
+      fi
       log "skipping: password is not available"
       exit 0
     fi
@@ -592,6 +606,9 @@ cmd_backup() {
   rm -f "$errfile"
 
   write_last_result ok "backup completed"
+  if (( ! after_unlock )); then
+    stop_keyring_retry
+  fi
   mark_repo_initialized
   notify "Omaclone" "Identity clone finished."
   write_recovery_card >/dev/null
@@ -1000,7 +1017,7 @@ cmd_status() {
     "" ) ;;
     *) die "usage: omaclone status [--json|--ack]" ;;
   esac
-  local repo transport secrets ready=false status="unknown" message="" unix=0
+  local repo transport secrets ready=false status="unknown" message="" unix=0 reason=""
   repo=$(config_get restic.repo)
   transport=$(config_get transport.backend)
   secrets=$(config_get secrets.backend)
@@ -1033,6 +1050,7 @@ cmd_status() {
     status=$(jq -r '.status // "unknown"' "$last" 2>/dev/null || echo unknown)
     message=$(jq -r '.message // empty' "$last" 2>/dev/null || true)
     unix=$(jq -r '.unix // 0' "$last" 2>/dev/null || echo 0)
+    reason=$(jq -r '.reason // empty' "$last" 2>/dev/null || true)
   elif [[ -z "$repo" ]]; then
     status=unconfigured
   fi
@@ -1091,7 +1109,7 @@ cmd_status() {
   ' 2>/dev/null || true)
   [[ "$watchPaths" == \[* ]] || watchPaths='[]'
 
-  local severity=ok issueTitle=""
+  local severity=ok issueTitle="" issueKind=""
   if [[ -z "$repo" ]]; then
     severity=warning
     issueTitle="Not configured"
@@ -1104,6 +1122,15 @@ cmd_status() {
     severity=warning
     issueTitle="Location not connected"
     [[ -n "$message" ]] || message="Plug in or mount the clone location, then retry."
+  elif [[ "$status" == skip ]] && issue_is_password_skip "$reason" "$message"; then
+    severity=warning
+    issueKind=password_locked
+    issueTitle="Password manager locked"
+    if [[ "$secrets" == keyring ]] && keyring_retry_active; then
+      message="The last automatic clone did not run because the keyring was locked. It will run when you unlock it."
+    else
+      message="The last automatic clone did not run because the password manager was locked. Store the restic password in the keyring for unattended clones, or clone from the pane after signing in."
+    fi
   elif [[ "$status" == skip ]]; then
     if issue_is_disconnect "$message"; then
       severity=ok
@@ -1172,8 +1199,9 @@ cmd_status() {
       --argjson watchPaths "$watchPaths" \
       --arg severity "$severity" \
       --arg issueTitle "$issueTitle" \
+      --arg issueKind "$issueKind" \
       --argjson issueAcked "$acked" \
-      '{ok:$ok,configured:$configured,transportReady:$transportReady,repo:$repo,transport:$transport,secrets:$secrets,lastStatus:$lastStatus,lastError:$lastError,lastBackupUnix:$lastBackupUnix,statusText:$statusText,snapshotCount:$snapshotCount,repoSizeBytes:$repoSizeBytes,repoSizeText:$repoSizeText,packedSizeBytes:$packedSizeBytes,packedSizeText:$packedSizeText,retentionPreset:$retentionPreset,retentionLabel:$retentionLabel,locationId:$locationId,locationLabel:$locationLabel,locationSchedule:$locationSchedule,locations:$locations,setupComplete:$setupComplete,connected:$connected,watchPath:$watchPath,watchPaths:$watchPaths,severity:$severity,issueTitle:$issueTitle,issueAcked:$issueAcked}'
+      '{ok:$ok,configured:$configured,transportReady:$transportReady,repo:$repo,transport:$transport,secrets:$secrets,lastStatus:$lastStatus,lastError:$lastError,lastBackupUnix:$lastBackupUnix,statusText:$statusText,snapshotCount:$snapshotCount,repoSizeBytes:$repoSizeBytes,repoSizeText:$repoSizeText,packedSizeBytes:$packedSizeBytes,packedSizeText:$packedSizeText,retentionPreset:$retentionPreset,retentionLabel:$retentionLabel,locationId:$locationId,locationLabel:$locationLabel,locationSchedule:$locationSchedule,locations:$locations,setupComplete:$setupComplete,connected:$connected,watchPath:$watchPath,watchPaths:$watchPaths,severity:$severity,issueTitle:$issueTitle,issueKind:$issueKind,issueAcked:$issueAcked}'
   else
     local setup_text="complete"
     [[ "$setupComplete" == false ]] && setup_text="unfinished"
@@ -1329,6 +1357,25 @@ _location_import_discovered() {
   location_activate "$id"
 }
 
+cmd_wait_keyring() {
+  local backend
+  backend=$(config_get secrets.backend)
+  [[ "$backend" == keyring ]] || exit 0
+  local deadline=$((SECONDS + 20 * 3600))
+  while (( SECONDS < deadline )); do
+    if nas_backup_backend_run secrets keyring get >/dev/null 2>&1; then
+      exec "$ROOT/scripts/omaclone" clone --after-unlock
+    fi
+    if command -v gdbus >/dev/null 2>&1; then
+      timeout 30 gdbus monitor --session --dest org.freedesktop.secrets >/dev/null 2>&1 || true
+    else
+      sleep 15
+    fi
+  done
+  log "keyring did not unlock in time; the next daily clone will try again"
+  exit 0
+}
+
 cmd_install() {
   mkdir -p "$HOME/.local/bin" "$HOME/.config/omarchy/plugins"
   omaclone_link_cli
@@ -1345,6 +1392,7 @@ cmd_install() {
     cp "$ROOT/systemd/omaclone.timer" "$unit_dir/omaclone.timer"
     cp "$ROOT/systemd/omaclone-prune.timer" "$unit_dir/omaclone-prune.timer"
     cp "$ROOT/systemd/omaclone-prune.service" "$unit_dir/omaclone-prune.service"
+    cp "$ROOT/systemd/omaclone-keyring-retry.service" "$unit_dir/omaclone-keyring-retry.service"
     systemctl --user daemon-reload
     location_schedule_apply
     loginctl enable-linger "$USER" 2>/dev/null || true
@@ -1368,9 +1416,10 @@ cmd_uninstall() {
         omarchy-shell shell setPluginEnabled "$PLUGIN_ID" false >/dev/null 2>&1 || true
     fi
     local unit_dir="$HOME/.config/systemd/user"
-    systemctl --user disable --now omaclone.timer omaclone-prune.timer 2>/dev/null || true
+    systemctl --user disable --now omaclone.timer omaclone-prune.timer omaclone-keyring-retry.service 2>/dev/null || true
     rm -f "$unit_dir/omaclone.service" "$unit_dir/omaclone.timer" \
-      "$unit_dir/omaclone-prune.service" "$unit_dir/omaclone-prune.timer"
+      "$unit_dir/omaclone-prune.service" "$unit_dir/omaclone-prune.timer" \
+      "$unit_dir/omaclone-keyring-retry.service"
     systemctl --user daemon-reload 2>/dev/null || true
   fi
   omaclone_unlink_cli
@@ -1487,6 +1536,7 @@ main() {
     check) cmd_check "$@" ;;
     init) cmd_init "$@" ;;
     prune) cmd_prune "$@" ;;
+    wait-keyring) cmd_wait_keyring "$@" ;;
     retention) cmd_retention "$@" ;;
     location|locations) cmd_location "$@" ;;
     -h|--help|help|"") usage ;;

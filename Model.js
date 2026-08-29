@@ -19,6 +19,7 @@ function defaultStatus() {
     setupComplete: false,
     severity: "ok",
     issueTitle: "",
+    issueKind: "",
     issueAcked: false,
     connected: false,
     watchPath: "",

@@ -75,7 +75,7 @@ It writes a **recovery card** to `~/.local/share/omaclone/RECOVERY.md` (no passw
 - Proton Pass (`pass-cli`) and 1Password (`op`) must be signed in. Setup offers Sign in, retry, change vault/item/field, paste this time, or continue later.
 - Re-run `omaclone setup` to resume. A saved destination does not trap you in "already configured" until the restic repo is initialized **and** a location is registered. Missing CLIs for a saved backend are installed again on resume.
 - `omaclone setup secrets` changes how omaclone gets the restic password without redoing the NAS/disk/cloud destination. The keyring offer resets so you can be asked again when switching away from keyring.
-- Same retry UI is used later for clone/restore if the manager is locked. When a CLI prints an update notice, the failure menu offers "Install the available update" near Sign in; after a successful unlock/get on TTY it may also offer to store the password in the local keyring so the backend tool isn't needed every run.
+- Same retry UI is used later for clone/restore if the manager is locked. When a CLI prints an update notice, the failure menu offers "Install the available update" near Sign in; after a successful unlock/get on TTY it may also offer to store the password in the local keyring so the daily timer can run without 1Password or Proton Pass being signed in.
 - Other cases you can continue later: restic init not done yet; S3/SMB keys missing (re-enter from setup); restore on a machine with no secrets backend chosen yet.
 
 Prefer a dedicated NAS dataset or a disk you are willing to use only for clones. The wizard mounts or initializes storage you already have; it does not create NAS shares for you.
@@ -176,6 +176,8 @@ Plugin id `omaclone.plugin`. Left-click the copied Omarchy mark on the bar.
 Right-click the chip (or press `r` in the pane) to refresh. Opening the pane also refreshes and searches mounted USB/NAS volumes for an Omaclone backup. Status is live health: whether each clone location is connected (disk plugged in, NAS mounted), not a stale last-result. Plug the drive back in and the not-connected / skipped-disk banner clears on the next refresh. While a disk or share is offline the chip polls every 10s and watches every installed UUID plus `last-result.json`. The chip uses the urgent color on error, a dimmer tone on warning, otherwise the bar foreground.
 
 Daily clone is `omaclone.timer` (02:00, with jitter). Weekly prune is `omaclone-prune.timer`. The timer clones `$HOME` without a password prompt; `/etc` and package lists are included only when `sudo` can run non-interactively (Omarchy’s optional passwordless sudo).
+
+Unattended clone needs a restic password with no terminal. **GNOME Keyring** can do that once the session keyring is unlocked: if the 02:00 timer fires while it is still locked, the chip turns the warning color and Omaclone waits, then clones automatically on the next unlock. **1Password** (`op`) and **Proton Pass** (`pass-cli`) must already be signed in; they cannot unlock themselves from a timer. If you keep using those instead of storing the restic password in the keyring, a locked or signed-out manager skips the automatic clone, the chip turns the warning color, and the pane says the last clone did not run. Clone from the pane after signing in, or accept the keyring offer so the timer can run on its own. The prompt-each-time backend never runs from the timer.
 
 ---
 

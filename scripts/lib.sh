@@ -794,6 +794,7 @@ restic_exec() {
 write_last_result() {
   local status="$1"
   local message="${2:-}"
+  local reason="${3:-}"
   mkdir -p "$NAS_BACKUP_STATE_DIR"
   local loc_id=""
   if [[ -n "${OMACLONE_LOCATIONS_LOADED:-}" ]]; then
@@ -801,14 +802,15 @@ write_last_result() {
   fi
   python3 - "$NAS_BACKUP_STATE_DIR/last-result.json" \
             "${NAS_BACKUP_STATE_DIR}/last-result-${loc_id}.json" \
-            "$status" "$message" "$loc_id" <<'PY'
+            "$status" "$message" "$loc_id" "$reason" <<'PY'
 import json, sys, time
-result_path, per_loc_path, status, message, loc = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+result_path, per_loc_path, status, message, loc, reason = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 data = {
     "status": status,
     "message": message,
     "unix": int(time.time()),
-    "location": sys.argv[5],
+    "location": loc,
+    "reason": reason,
 }
 with open(result_path, "w", encoding="utf-8") as fh:
     json.dump(data, fh)
@@ -890,6 +892,42 @@ issue_is_disconnect() {
       return 0 ;;
   esac
   return 1
+}
+
+issue_is_password_skip() {
+  local reason="${1:-}"
+  local msg="${2:-}"
+  [[ "$reason" == password ]] && return 0
+  local lower
+  lower=$(printf '%s' "$msg" | tr '[:upper:]' '[:lower:]')
+  case "$lower" in
+    *password\ is\ not\ available*|*unlock\ keyring*|*password\ manager*|*prompt\ backend*)
+      return 0 ;;
+  esac
+  return 1
+}
+
+keyring_retry_active() {
+  [[ "${OMACLONE_SKIP_SYSTEMD:-}" == 1 ]] && return 1
+  systemctl --user is-active --quiet omaclone-keyring-retry.service 2>/dev/null
+}
+
+schedule_keyring_retry() {
+  [[ "${OMACLONE_SKIP_SYSTEMD:-}" == 1 ]] && return 0
+  local unit="$HOME/.config/systemd/user/omaclone-keyring-retry.service"
+  local src="$NAS_BACKUP_ROOT/systemd/omaclone-keyring-retry.service"
+  if [[ ! -f "$unit" && -f "$src" ]]; then
+    mkdir -p "$(dirname "$unit")"
+    cp "$src" "$unit"
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  [[ -f "$unit" ]] || return 0
+  systemctl --user start omaclone-keyring-retry.service 2>/dev/null || true
+}
+
+stop_keyring_retry() {
+  [[ "${OMACLONE_SKIP_SYSTEMD:-}" == 1 ]] && return 0
+  systemctl --user stop omaclone-keyring-retry.service 2>/dev/null || true
 }
 
 issue_is_acked() {

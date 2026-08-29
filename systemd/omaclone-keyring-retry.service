@@ -1,0 +1,10 @@
+[Unit]
+Description=Omaclone clone when the keyring unlocks
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=infinity
+ExecStart=%h/.local/bin/omaclone wait-keyring
+Nice=10
+IOSchedulingClass=idle

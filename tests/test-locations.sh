@@ -216,6 +216,24 @@ title=$(printf '%s' "$got" | jq -r '.issueTitle')
 [[ "$sev" == "warning" ]] || fail "missing uuid: expected warning, got $sev"
 echo "$title" | grep -qi "not connected" || fail "missing uuid: issueTitle should mention not connected, got '$title'"
 
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.backend local
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.uuid ""
+python3 -c '
+import json, time, sys
+data = {"status": "skip", "message": "Password is not available (unlock keyring or sign in)", "reason": "password", "unix": int(time.time()), "location": "nas"}
+open(sys.argv[1] + "/last-result.json", "w").write(json.dumps(data))
+open(sys.argv[1] + "/last-result-nas.json", "w").write(json.dumps(data))
+' "$NAS_BACKUP_STATE_DIR"
+got=$("$ROOT/scripts/omaclone" status --json)
+sev=$(printf '%s' "$got" | jq -r '.severity')
+kind=$(printf '%s' "$got" | jq -r '.issueKind')
+title=$(printf '%s' "$got" | jq -r '.issueTitle')
+err=$(printf '%s' "$got" | jq -r '.lastError')
+[[ "$sev" == "warning" ]] || fail "password skip: expected warning, got $sev"
+[[ "$kind" == "password_locked" ]] || fail "password skip: expected issueKind password_locked, got $kind"
+echo "$title" | grep -qi "password manager" || fail "password skip: issueTitle should mention password manager, got '$title'"
+echo "$err" | grep -qi "did not run" || fail "password skip: lastError should say the clone did not run, got '$err'"
+
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.ids "usb,nas"
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.active nas
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.backend nfs
