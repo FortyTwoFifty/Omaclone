@@ -29,9 +29,7 @@ cd Omaclone
 
 After setup, `omaclone` lands on PATH; `omarchy-backup` and `nas-backup` remain aliases.
 
-Requires a normal Omarchy box: `restic`, `jq`, `gum`, `rsync` (installed if missing). NFS/SMB/SFTP/disk tools are pulled in only for the destination you pick.
-
-The wizard installs any missing core dependencies at start. If you select a backend whose CLI is absent, it lists `[not installed]` and offers to install it before continuing — pacman for distro packages, official curl installers for 1Password (`op`) and Proton Pass (`pass-cli`). You confirm before any remote download.
+Setup installs any missing **required** packages at start. Destination, password-manager, and notification CLIs are **optional** and only installed if you pick them — see [Dependencies](#dependencies).
 
 ### Configure
 
@@ -51,6 +49,61 @@ omarchy plugin remove omaclone.plugin
 Run `uninstall` first while the plugin tree is still present. It removes the PATH command and daily/prune timers. `omarchy plugin remove omaclone.plugin` unloads the bar widget. If you never ran setup, only the second command is needed.
 
 Neither command deletes `~/.config/omaclone`, `~/.local/share/omaclone`, or clones stored on NAS, disk, or cloud. NFS or extra-disk systemd mount units created during setup stay until you disable them.
+
+---
+
+## Dependencies
+
+Omaclone is MIT-licensed ([LICENSE](LICENSE)). It needs a normal Omarchy box (bash, systemd, `python3`, `util-linux`). Everything else is listed below.
+
+The wizard installs missing **required** packages with `sudo pacman -S --needed`. Optional backend CLIs are labeled `[not installed]` until you pick that destination or secrets source. Pacman packages are installed from the distro repos. 1Password (`op`) and Proton Pass (`pass-cli`) use their official installers; you confirm before any remote download.
+
+### Required
+
+| Package | Provides | Notes |
+|---|---|---|
+| `restic` | Encrypted snapshots | Core clone/restore engine |
+| `jq` | JSON | Status, locations, bar pane |
+| `gum` | TUI | Setup, restore, and confirmations. Ships with Omarchy |
+| `rsync` | File copy | Staging dumps and bootstrap kit |
+| `curl` | HTTP | Core setup; also used by the optional `op` / `pass-cli` installers |
+| `python` | `python3` | `config.toml` and disk/bootstrap helpers. Already on Omarchy; not auto-installed |
+
+`findmnt` and `lsblk` come from `util-linux` (base). `sudo` is used for pacman and, if you choose NFS or an extra disk, for systemd `.mount` / `.automount` units.
+
+### Optional — destination
+
+Installed only for the transport you pick.
+
+| When | Package | Provides |
+|---|---|---|
+| NAS over NFS | `nfs-utils` | `mount.nfs` / `mount.nfs4` |
+| NAS over SMB | `cifs-utils` | `mount.cifs`. Share password goes in the keyring (`libsecret`) |
+| NAS over SFTP | `openssh` | `ssh`, `scp` |
+| Extra disk | — | Uses `lsblk` / `findmnt`. `udisksctl` mounts a cold disk if no mountpoint is set. Formatting a blank disk needs `mkfs.ext4` (`e2fsprogs`) |
+| S3-compatible cloud | — | Restic’s native S3 backend. Access keys go in the keyring (`libsecret`), never `config.toml` |
+| Already-mounted path | — | No extra packages |
+
+### Optional — restic password
+
+Pick one in setup. Paste-each-time needs nothing extra and cannot run from the daily timer.
+
+| Backend | Package / CLI | Install |
+|---|---|---|
+| GNOME Keyring | `libsecret` (`secret-tool`) | pacman. Also used to store S3/SMB keys |
+| 1Password | `op` | Official zip from AgileBits into `~/.local/bin/op` (needs `unzip`) |
+| Proton Pass | `pass-cli` | Official installer from proton.me, after confirmation |
+| Prompt each time | — | No extra CLI |
+
+### Optional — notifications
+
+| Package | Provides | Notes |
+|---|---|---|
+| `libnotify` | `notify-send` | Desktop notices for clone success, skip, and failure. Clone still works without it |
+
+### Optional — tests
+
+`node` is only needed for `node ./tests/test-model.js`. The shell tests use the required tools above.
 
 ---
 
