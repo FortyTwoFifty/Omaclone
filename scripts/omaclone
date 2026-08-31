@@ -38,6 +38,7 @@ Usage:
   omaclone location schedule [ID] [on|off]
                                  Show or set daily clones for a location
   omaclone doctor                Check destination, uid mapping, repo path
+  omaclone --version             Print plugin version
 EOF
 }
 
@@ -1700,6 +1701,13 @@ main() {
     retention) cmd_retention "$@" ;;
     location|locations) cmd_location "$@" ;;
     -h|--help|help|"") usage ;;
+    --version|version|-V)
+      python3 - "$ROOT/manifest.json" <<'PY'
+import json, sys
+from pathlib import Path
+print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("version", "0"))
+PY
+      ;;
     *) die "unknown command: $cmd" ;;
   esac
 }

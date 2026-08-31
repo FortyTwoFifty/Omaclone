@@ -5,6 +5,7 @@
 /.local/share/Trash
 /.local/share/Steam
 /.steam
+/.var/app/com.valvesoftware.Steam
 /.ollama
 /.gvfs
 /.npm/_cacache

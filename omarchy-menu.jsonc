@@ -15,6 +15,12 @@
   "omaclone.status": {
     "icon": "󰋼",
     "label": "Status",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone status'"
+  },
+  "omaclone.doctor": {
+    "icon": "󰋼",
+    "label": "Doctor",
+    "description": "Check mount, uid mapping, repo path",
     "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone doctor'"
   },
   "omaclone.snapshots": {

@@ -74,6 +74,9 @@ omaclone_test_cfg destination.profile cloud
 omaclone_test_cfg transport.endpoint example.r2.cloudflarestorage.com
 omaclone_test_cfg transport.bucket mybucket
 omaclone_test_cfg restic.repo "s3:https://example.r2.cloudflarestorage.com/mybucket/omaclone"
+ver=$("$ROOT/scripts/omaclone" --version)
+[[ "$ver" == "1.5.0" ]] || fail "omaclone --version expected 1.5.0, got $ver"
+
 card=$(write_recovery_card)
 grep -q "plugin add" "$card" || fail "s3 recovery card should use plugin add"
 grep -q "/path/to/clone/restore" "$card" && fail "s3 recovery card must not use USB restore path"

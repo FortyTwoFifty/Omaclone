@@ -48,7 +48,7 @@ omarchy plugin remove omaclone.plugin
 
 Run `uninstall` first while the plugin tree is still present. It removes the PATH command and daily/prune timers. `omarchy plugin remove omaclone.plugin` unloads the bar widget. If you never ran setup, only the second command is needed.
 
-Neither command deletes `~/.config/omaclone`, `~/.local/share/omaclone`, or clones stored on NAS, disk, or cloud. NFS or extra-disk systemd mount units created during setup stay until you disable them.
+Neither command deletes `~/.config/omaclone`, `~/.local/share/omaclone`, or clones stored on NAS, disk, or cloud. NFS systemd mount units created during setup stay until you disable them. Extra disks do not get systemd mount units unless you add them yourself.
 
 ---
 
@@ -157,7 +157,7 @@ Do not convert a browse-only SMB mount to NFS just to fix this. Use a dedicated 
 /path/to/clone/restore
 ```
 
-That launcher lives next to the encrypted restic repo (`RESTORE.md` + `config.toml` + `./restore`). It has **no passwords**.
+That launcher lives next to the encrypted restic repo (`RESTORE.md` + `config.toml` + `SHA256SUMS` + `./restore`). It has **no passwords**. Prefer a plugin install from git; a kit copy that does not match `SHA256SUMS` asks you to type `UNTRUSTED`.
 
 **Cloud, or you only have this plugin:**
 
@@ -166,11 +166,11 @@ omarchy plugin add https://github.com/FortyTwoFifty/Omaclone.git --enable
 ~/.config/omarchy/plugins/omaclone.plugin/scripts/omaclone restore
 ```
 
-The TUI installs dependencies if needed, asks for the restic password (password manager, keyring, or a one-time paste), lets you pick a snapshot, and overlays `$HOME`. Type `RESTORE` if home is not empty.
+S3 has no `./restore` file. Re-enter access keys on the new machine; they are not on the recovery card.
 
-It will **not** copy `fstab`, LUKS headers, Limine `PARTUUID`, hostname, or GPU/CPU packages. That is what makes restore work on different hardware.
+The TUI asks for the restic password, lets you pick a snapshot (host + time), and **overlays** `$HOME`. Type `RESTORE` to continue. Extra files already on this home stay unless you pass `--delete` and type `REPLACE`. ssh, gpg, browsers, and desktop keyring files come back with home.
 
-`--same-machine` means “I replaced the boot drive in this PC.” It still refuses bootloader and LUKS files.
+It will **not** copy `fstab`, LUKS headers, Limine `PARTUUID`, hostname, or GPU/CPU packages. `--same-machine` means you replaced the boot drive in this PC: it can offer hardware packages from the clone, and still refuses bootloader and LUKS files.
 
 ### After reboot
 
@@ -221,10 +221,10 @@ Plugin id `omaclone.plugin`. Left-click the copied Omarchy mark on the bar.
 
 - **Upper right of the pane:** copied Omarchy mark (the bar logo, stacked like a copy icon)
 - **Locations:** radios for connected clone targets (USB only while plugged in) plus any mounted volume that looks like an Omaclone kit
-- **Tiles:** live clone count from the connected drive (hidden when nothing is plugged in), connected storage, keep plan
-- **Keep:** click to change retention; confirming a tighter plan prunes clones that fall outside it
-- **Storage:** the tile shows the active clone location; click it (or press `l`) to switch
-- **Actions:** setup, clone now, list snapshots, restore
+- **Tiles:** clone count (dash when nothing is connected), storage (label + size), keep plan
+- **Keep:** click to change retention; a **tighter** plan prunes clones that fall outside it. Widening does not prune.
+- **Storage:** the tile shows the active clone location; click it (or press `l`) to switch. Extra disks are not always labeled USB.
+- **Actions:** setup (until configured), clone now, keep, clones, add location, restore
 
 Right-click the chip (or press `r` in the pane) to refresh. Opening the pane also refreshes and searches mounted USB/NAS volumes for an Omaclone backup. Status is live health: whether each clone location is connected (disk plugged in, NAS mounted), not a stale last-result. Plug the drive back in and the not-connected / skipped-disk banner clears on the next refresh. While a disk or share is offline the chip polls every 10s and watches every installed UUID plus `last-result.json`. The chip uses the urgent color on error, a dimmer tone on warning, otherwise the bar foreground.
 
@@ -239,23 +239,27 @@ Unattended clone needs a restic password with no terminal. **GNOME Keyring** can
 ```
 omaclone setup [secrets|continue]       First-run or resume wizard; secrets reconfigures the password source
 omaclone clone [--cron]                 Save an identity clone (alias: backup)
-omaclone restore [--same-machine] [--snapshot ID]
+omaclone restore [--same-machine] [--snapshot ID] [--blank-omarchy] [--delete]
 omaclone snapshots                      List restic snapshots
-omaclone forget [ID...] [--all] [--yes] Remove clones from this location
+omaclone forget [ID...] [--all] [--yes] Remove clones from this location (alias: remove)
 omaclone status [--json|--ack]          Last clone, size, keep plan, location connected
 omaclone install                        PATH, timers, bar plugin
-omaclone uninstall                      Remove PATH command, timers, and plugin symlink
+omaclone uninstall                      Remove PATH command, timers, plugin symlink, and our menu keys
 omaclone check                          restic check
 omaclone init                           restic init on the configured repo
 omaclone prune                          Apply the keep plan and delete the rest
 omaclone retention                      Show keep plan
-omaclone retention set PRESET [--yes]   Change keep plan (confirms, then prunes)
-omaclone location                       List clone locations
+omaclone retention set PRESET [--yes]   Change keep plan (prunes only if tighter)
+omaclone location                       List clone locations (alias: locations)
 omaclone location add                   Register another NAS / disk / cloud
 omaclone location switch [ID]           Make a location active (timers follow it)
 omaclone location remove [ID] [--yes]   Forget a location (does not erase the drive)
+omaclone location schedule [ID] [on|off]
 omaclone doctor                         Mount, uid mapping, repo path
+omaclone --version                      Plugin version
 ```
+
+Skip from the daily timer is exit 0 with a last-result; a real failure is exit 1.
 
 ### Retention presets
 
@@ -276,14 +280,14 @@ Change this in setup, the bar pane, the Omarchy menu (**Omaclone → Keep plan�
 
 **Cloned**
 
-- `$HOME` (configs, dotfiles, identity state, and game saves that live outside Steam)
-- Allowlisted `/etc` paths only (currently FIDO2). Not `fstab`, `crypttab`, hostname, mkinitcpio, Limine, LUKS, shadow, or NetworkManager — those are refused even if the allowlist file is edited
+- `$HOME` (configs, dotfiles, **ssh/gpg/browser profiles**, desktop keyring files, identity state, and game saves that live outside Steam)
+- Allowlisted `/etc` paths only (currently FIDO2). Not `fstab`, `crypttab`, hostname, mkinitcpio, Limine, LUKS, shadow, NetworkManager, systemd, pam, polkit, or ssh — those are refused even if the allowlist file is edited
 - Pacman identity packages (not GPU/firmware)
 - Enabled user units, minus machine-local mounts (see `config/user-units.deny`)
 
 **Not cloned**
 
-- Steam libraries and Proton prefixes (`~/.local/share/Steam`, `~/.steam`), including Steam/Proton saves
+- Steam libraries and Proton prefixes (`~/.local/share/Steam`, `~/.steam`, Flatpak `~/.var/app/com.valvesoftware.Steam`), including Steam/Proton saves
 - Ollama models (`~/.ollama`)
 - Package caches, `node_modules`, `.git/objects`
 - Snapper snapshots, swap
@@ -301,7 +305,7 @@ Edit `config/excludes.txt` (gitignore-style, relative to `$HOME`) and `config/ha
 - Paste-once uses `gum input --password` and a mode `600` tmpfs file, shredded when restic exits.
 - SMB passwords and S3 keys use Omaclone’s own GNOME Keyring collection (or a prompt). Never the default desktop keyring, never `mount.cifs` argv. Writing to an unencrypted default keyring can make gnome-keyring refuse to load it after a secret with a newline is stored (Proton VPN and similar), which drops every other app’s saved passwords.
 - Do not reuse login, LUKS, or password-manager master passwords for the restic repo.
-- Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`) contain **no secrets**.
+- Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`) contain **no secrets**. The kit is still untrusted code; prefer `omarchy plugin add` from git.
 - LUKS headers are not collected.
 
 Config: `~/.config/omaclone/config.toml` (mode `600`).  
