@@ -14,6 +14,16 @@ fi
 
 _CORE_PACMAN_PKGS=(gum jq restic rsync curl)
 
+_deps_pacman() {
+  if [[ -n "${OMACLONE_PACMAN:-}" ]]; then
+    # Test hook: a stub command that receives the same argv as pacman.
+    # shellcheck disable=SC2086
+    command ${OMACLONE_PACMAN} "$@"
+    return
+  fi
+  sudo pacman "$@"
+}
+
 deps_ensure_pacman() {
   local pkg="$1"
   local cmd="${2:-$pkg}"
@@ -21,7 +31,7 @@ deps_ensure_pacman() {
     return 0
   fi
   echo "Installing $pkg …" >&2
-  sudo pacman -S --needed --noconfirm "$pkg" || {
+  _deps_pacman -S --needed --noconfirm "$pkg" || {
     die "failed to install $pkg via pacman — re-run: omaclone setup"
   }
 }
@@ -37,7 +47,7 @@ deps_ensure_pacman_list() {
     return 0
   fi
   echo "Installing ${missing[*]} …" >&2
-  sudo pacman -S --needed --noconfirm "${missing[@]}" || {
+  _deps_pacman -S --needed --noconfirm "${missing[@]}" || {
     die "failed to install packages — re-run: omaclone setup"
   }
 }

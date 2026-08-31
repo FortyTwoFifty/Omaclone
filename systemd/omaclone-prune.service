@@ -2,7 +2,9 @@
 Description=Prune Omaclone restic snapshots
 After=network-online.target
 Wants=network-online.target
+Conflicts=omaclone.service omaclone-keyring-retry.service
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/omaclone prune
+TimeoutStartSec=infinity
+ExecStart=%h/.local/bin/omaclone prune --cron

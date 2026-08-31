@@ -1,6 +1,7 @@
 [Unit]
 Description=Omaclone clone when the keyring unlocks
 After=graphical-session.target
+Conflicts=omaclone.service omaclone-prune.service
 
 [Service]
 Type=oneshot

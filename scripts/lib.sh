@@ -242,11 +242,32 @@ data = {
     "locationId": loc if loc else "",
     "unix": int(time.time()),
 }
-with open(path, "w", encoding="utf-8") as fh:
-    json.dump(data, fh)
+import os, tempfile
+from pathlib import Path
+
+def atomic_write(dest, payload):
+    dest = Path(dest)
+    if not dest.name:
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(dest.parent), prefix=dest.name + ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, dest)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+atomic_write(path, data)
 if per_loc_path:
-    with open(per_loc_path, "w", encoding="utf-8") as fh:
-        json.dump(data, fh)
+    atomic_write(per_loc_path, data)
 PY
 }
 
@@ -443,7 +464,31 @@ _nas_backup_on_exit() {
   password_cleanup
 }
 
-trap '_nas_backup_on_exit' EXIT INT TERM HUP
+_nas_backup_on_signal() {
+  local sig="${1:-INT}"
+  password_cleanup
+  trap - EXIT
+  case "$sig" in
+    INT) exit 130 ;;
+    TERM) exit 143 ;;
+    HUP) exit 129 ;;
+    *) exit 1 ;;
+  esac
+}
+
+trap '_nas_backup_on_exit' EXIT
+trap '_nas_backup_on_signal INT' INT
+trap '_nas_backup_on_signal TERM' TERM
+trap '_nas_backup_on_signal HUP' HUP
+
+omaclone_acquire_lock() {
+  local lock="$NAS_BACKUP_STATE_DIR/omaclone.lock"
+  mkdir -p "$NAS_BACKUP_STATE_DIR"
+  exec 9>"$lock"
+  if ! flock -n 9; then
+    die "another omaclone clone, prune, or forget is already running"
+  fi
+}
 
 _password_tmpdir() {
   if [[ -d /dev/shm && -w /dev/shm ]]; then
@@ -759,7 +804,9 @@ transport_prepare_env() {
   chmod 600 "$NAS_BACKUP_ENVFILE"
   : >"$NAS_BACKUP_ENVFILE"
   export NAS_BACKUP_ENVFILE
-  nas_backup_backend_run transport "$backend" pre-restic 2>/dev/null || true
+  if ! nas_backup_backend_run transport "$backend" pre-restic 2>/dev/null; then
+    die "transport '$backend' failed to prepare restic credentials"
+  fi
 }
 
 restic_exec() {
@@ -812,11 +859,32 @@ data = {
     "location": loc,
     "reason": reason,
 }
-with open(result_path, "w", encoding="utf-8") as fh:
-    json.dump(data, fh)
-if per_loc_path and not per_loc_path.endswith("/last-result-.json"):
-    with open(per_loc_path, "w", encoding="utf-8") as fh:
-        json.dump(data, fh)
+import os, tempfile
+from pathlib import Path
+
+def atomic_write(path, payload):
+    path = Path(path)
+    if not path.parent.as_posix() or path.name.endswith("last-result-.json"):
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+atomic_write(result_path, data)
+if per_loc_path:
+    atomic_write(per_loc_path, data)
 PY
 }
 
@@ -885,6 +953,10 @@ PY
 
 issue_is_disconnect() {
   local msg="${1:-}"
+  local backend="${2:-}"
+  case "$backend" in
+    s3|sftp) return 1 ;;
+  esac
   local lower
   lower=$(printf '%s' "$msg" | tr '[:upper:]' '[:lower:]')
   case "$lower" in

@@ -71,6 +71,12 @@ ensure_transport() {
   fi
   if ! nas_backup_backend_run transport "$backend" mount; then
     if (( cron )); then
+      if [[ "$backend" == s3 ]]; then
+        write_last_result skip "S3 access keys are not available (unlock keyring)" password
+        notify "Omaclone skipped" "The last clone did not run because S3 keys were not available." low
+        log "skipping: S3 credentials are not available"
+        exit 0
+      fi
       write_last_result skip "Clone location is not mounted"
       notify "Omaclone skipped" "Mount the clone location and it will run next time." low
       log "skipping: clone location is not mounted"
@@ -509,7 +515,7 @@ cmd_setup() {
 
 cmd_init() {
   ensure_transport
-  password_load || return 0
+  password_load || return 1
   transport_prepare_env
   restic_exec init
   password_cleanup
@@ -528,6 +534,7 @@ cmd_backup() {
     shift
   done
   need_cmd restic jq
+  omaclone_acquire_lock
   if (( cron )); then
     ensure_transport --cron
   else
@@ -541,7 +548,9 @@ cmd_backup() {
     exit 0
   fi
 
-  if (( cron )); then
+  if [[ "${OMACLONE_SKIP_PREP:-}" == 1 ]]; then
+    log "prep skipped (OMACLONE_SKIP_PREP)"
+  elif (( cron )); then
     if sudo -n true >/dev/null 2>&1; then
       log "running prep (sudo)…"
       sudo -n "$ROOT/scripts/prep.sh" || log "cron: prep failed; cloning \$HOME only"
@@ -569,7 +578,7 @@ cmd_backup() {
       log "skipping: password is not available"
       exit 0
     fi
-    return 0
+    return 1
   fi
   transport_prepare_env
   local exclude="$ROOT/config/excludes.txt"
@@ -612,12 +621,14 @@ cmd_backup() {
   mark_repo_initialized
   notify "Omaclone" "Identity clone finished."
   write_recovery_card >/dev/null
-  nas_backup_backend_run transport "$(config_get transport.backend)" bootstrap-install 2>/dev/null || true
+  if [[ "${OMACLONE_SKIP_BOOTSTRAP:-}" != 1 ]]; then
+    nas_backup_backend_run transport "$(config_get transport.backend)" bootstrap-install 2>/dev/null || true
+  fi
 }
 
 cmd_snapshots() {
   ensure_transport
-  password_load || return 0
+  password_load || return 1
   transport_prepare_env
   restic_exec snapshots
   password_cleanup
@@ -626,7 +637,7 @@ cmd_snapshots() {
 
 cmd_check() {
   ensure_transport
-  password_load || return 0
+  password_load || return 1
   transport_prepare_env
   restic_exec check
   password_cleanup
@@ -634,8 +645,23 @@ cmd_check() {
 }
 
 cmd_prune() {
-  ensure_transport
-  password_load || return 0
+  local cron=0
+  [[ "${1:-}" == --cron ]] && cron=1
+  omaclone_acquire_lock
+  if (( cron )); then
+    ensure_transport --cron
+  else
+    ensure_transport
+  fi
+  if (( cron )); then
+    password_load || {
+      write_last_result skip "Password is not available (unlock keyring or sign in)" password
+      log "skipping prune: password is not available"
+      exit 0
+    }
+  else
+    password_load || return 1
+  fi
   transport_prepare_env
   local args=()
   mapfile -t args < <(retention_forget_args)
@@ -661,8 +687,9 @@ cmd_forget() {
     esac
     shift
   done
+  omaclone_acquire_lock
   ensure_transport
-  password_load || return 0
+  password_load || return 1
   transport_prepare_env
   local table n
   table=$(restic_exec snapshots --json)
@@ -877,8 +904,9 @@ cmd_restore() {
   if [[ -z "$(config_get secrets.backend)" ]]; then
     _setup_secrets || return 1
   fi
+  omaclone_acquire_lock
   ensure_transport
-  password_load || return 0
+  password_load || return 1
   transport_prepare_env
 
   local id
@@ -1132,7 +1160,7 @@ cmd_status() {
       message="The last automatic clone did not run because the password manager was locked. Store the restic password in the keyring for unattended clones, or clone from the pane after signing in."
     fi
   elif [[ "$status" == skip ]]; then
-    if issue_is_disconnect "$message"; then
+    if issue_is_disconnect "$message" "$transport"; then
       severity=ok
       issueTitle=""
     else

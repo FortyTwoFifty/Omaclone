@@ -2,9 +2,11 @@
 Description=Omaclone identity clone
 After=network-online.target
 Wants=network-online.target
+Conflicts=omaclone-prune.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=infinity
 ExecStart=%h/.local/bin/omaclone clone --cron
 Nice=10
 IOSchedulingClass=idle

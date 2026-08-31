@@ -82,6 +82,17 @@ mount() {
   fi
   sudo_noninteractive mkdir -p "$mountpoint" || exit 1
   cred=$(_smb_cred_file)
+  _cifs_shred_cred() {
+    local f="${1:-}"
+    [[ -n "$f" && -e "$f" ]] || return 0
+    if command -v shred >/dev/null 2>&1; then
+      shred -u "$f" 2>/dev/null || rm -f "$f"
+    else
+      : >"$f"
+      rm -f "$f"
+    fi
+  }
+  trap '_cifs_shred_cred "'"$cred"'"' EXIT INT TERM HUP
   {
     printf 'username=%s\n' "$user"
     printf 'password='
@@ -91,14 +102,10 @@ mount() {
   chmod 600 "$cred"
   local rc=0
   sudo_noninteractive mount -t cifs "$uri" "$mountpoint" \
-    -o "credentials=${cred},uid=$(id -u),gid=$(id -g),file_mode=0600,dir_mode=0700,_netdev" \
+    -o "credentials=${cred},uid=$(id -u),gid=$(id -g),file_mode=0600,dir_mode=0700,nosuid,nodev,noexec,_netdev" \
     || rc=$?
-  if command -v shred >/dev/null 2>&1; then
-    shred -u "$cred" 2>/dev/null || rm -f "$cred"
-  else
-    : >"$cred"
-    rm -f "$cred"
-  fi
+  _cifs_shred_cred "$cred"
+  trap - EXIT INT TERM HUP
   exit "$rc"
 }
 
