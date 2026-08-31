@@ -222,7 +222,15 @@ location_default_schedule() {
   local backend="${1:-}"
   local mode="${2:-}"
   case "$backend" in
-    disk) printf '%s\n' off ;;
+    disk)
+      # Hot extra disk (configured mountpoint / NVMe) can run the timer.
+      # USB/cold stays off until `omaclone location schedule on`.
+      if [[ "$mode" == hot ]]; then
+        printf '%s\n' on
+      else
+        printf '%s\n' off
+      fi
+      ;;
     *) printf '%s\n' on ;;
   esac
 }
@@ -269,6 +277,7 @@ location_connected() {
 location_save_current() {
   local id="$1"
   local backend mode label schedule
+  [[ -n "$id" ]] || die "location id is empty; run: omaclone setup"
   backend=$(config_get transport.backend)
   [[ -n "$backend" ]] || die "no transport configured"
   local uuid mp uri
@@ -277,10 +286,14 @@ location_save_current() {
   uri=$(config_get transport.uri)
   _location_forgotten_unmark "$uuid" "$mp" "${mp:+$mp/omaclone}" "$uri"
   config_set locations.migrated 1
-  if [[ "$backend" == disk ]]; then
-    mode="hybrid"
-  else
-    mode=$(config_get transport.mode)
+  mode=$(config_get transport.mode)
+  if [[ "$backend" == disk && -z "$mode" ]]; then
+    if [[ -n "$mp" ]]; then
+      mode=hot
+    else
+      mode=cold
+    fi
+    config_set transport.mode "$mode"
   fi
   label="${2:-$(location_default_label "$backend" "$(config_get destination.profile)" "$mode")}"
   schedule="${3:-$(location_default_schedule "$backend" "$mode")}"
@@ -294,9 +307,6 @@ location_save_current() {
   location_set "$id" uuid "$(config_get transport.uuid)"
   location_set "$id" device "$(config_get transport.device)"
   location_set "$id" fstype "$(config_get transport.fstype)"
-  if [[ "$backend" == disk ]]; then
-    config_set transport.mode hybrid
-  fi
   location_set "$id" mode "$mode"
   location_set "$id" schedule "$schedule"
   location_set "$id" endpoint "$(config_get transport.endpoint)"

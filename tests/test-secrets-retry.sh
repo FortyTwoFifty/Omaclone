@@ -115,8 +115,10 @@ mkdir -p "$NAS_BACKUP_STATE_DIR"
 printf '%s\n' '{"status":"ok","message":"backup completed","unix":1}' >"$NAS_BACKUP_STATE_DIR/last-result.json"
 setup_is_unfinished && true || fail "test 14b: last-result ok without locations.ids should still be unfinished"
 config_set locations.ids "cloud"
+setup_is_unfinished && true || fail "test 14c: s3 last-result ok must not count as initialized"
+config_set restic.initialized 1
 if setup_is_unfinished; then
-  fail "test 14c: s3 with last-result ok and a location should be finished"
+  fail "test 14d: s3 with restic.initialized=1 and a location should be finished"
 fi
 
 secrets_notice_is_update "New update available: v1 -> v2 (run \"pass-cli update\")" \

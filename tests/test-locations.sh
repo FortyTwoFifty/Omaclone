@@ -54,7 +54,7 @@ location_sync_active
 
 location_activate usb
 [[ "$(config_get transport.backend)" == disk ]] || fail "switch back to disk"
-[[ "$(config_get transport.mode)" == hybrid ]] || fail "usb mode"
+[[ "$(config_get transport.mode)" == cold ]] || fail "usb mode should stay cold, got $(config_get transport.mode)"
 
 json=$(location_list_json)
 echo "$json" | jq -e '.[] | select(.id=="usb")' >/dev/null || fail "list json usb"

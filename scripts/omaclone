@@ -35,6 +35,8 @@ Usage:
   omaclone location switch [ID]  Make a location active
   omaclone location add          Register another NAS / disk / cloud
   omaclone location remove [ID]  Forget a location (does not erase the drive)
+  omaclone location schedule [ID] [on|off]
+                                 Show or set daily clones for a location
   omaclone doctor                Check destination, uid mapping, repo path
 EOF
 }
@@ -175,7 +177,7 @@ _setup_init_repo() {
     sudo pacman -S --needed --noconfirm restic jq
   fi
   need_cmd restic jq
-  _setup_ensure_transport || return 1
+  _setup_ensure_transport || return $?
   local repo parent
   repo=$(restic_repo)
   parent=$(dirname "$repo")
@@ -230,7 +232,7 @@ _setup_init_repo() {
           ;;
         Continue*)
           tui_note "Run: omaclone setup"
-          return 1
+          return 2
           ;;
       esac
     else
@@ -243,7 +245,7 @@ _setup_init_repo() {
         return 0
       else
         tui_note "Repository not initialized. Run: omaclone setup"
-        return 1
+        return 2
       fi
     fi
   done
@@ -290,6 +292,32 @@ _setup_register_location() {
   location_save_current "$id" "$label" "$schedule"
   config_set locations.active "$id"
   LOCATION_LAST_ID="$id"
+}
+
+_setup_accept_defer() {
+  local rc="${1:-1}"
+  (( rc == 0 || rc == 2 )) && return 0
+  return "$rc"
+}
+
+_setup_install_or_schedule() {
+  local loc sched
+  loc=$(location_active_id)
+  sched=$(location_get "$loc" schedule on)
+  if [[ "$sched" == on ]]; then
+    # Daily clones need the user timer units, even if PATH already exists.
+    cmd_install
+    return 0
+  fi
+  if [[ -L "$HOME/.local/bin/omaclone" ]]; then
+    location_schedule_apply
+    return 0
+  fi
+  if tui_confirm "Install the PATH command, bar plugin, and timers?"; then
+    cmd_install
+  else
+    location_schedule_apply
+  fi
 }
 
 _setup_secrets() {
@@ -342,7 +370,7 @@ _setup_ensure_transport() {
         ;;
       Continue*)
         tui_note "Destination is saved. Run: omaclone setup"
-        return 1
+        return 2
         ;;
     esac
   done
@@ -379,18 +407,13 @@ _setup_continue() {
     config_set retention.preset "$keep"
     tui_note "Keeping: $(retention_label "$keep")"
   fi
-  _setup_init_repo || return 0
+  _setup_init_repo
+  _setup_accept_defer $? || return
   if [[ -z "$(config_get locations.ids)" ]]; then
     _setup_register_location
   fi
 
-  if [[ -L "$HOME/.local/bin/omaclone" ]]; then
-    location_schedule_apply
-  elif tui_confirm "Install the PATH symlink and bar plugin?"; then
-    cmd_install
-  else
-    location_schedule_apply
-  fi
+  _setup_install_or_schedule
 
   local card
   card=$(write_recovery_card)
@@ -463,13 +486,21 @@ cmd_setup() {
         ;;
       Replace*)
         _setup_pick_destination
-        _setup_init_repo || return 0
-        location_save_current "$(location_active_id)"
+        _setup_init_repo
+        _setup_accept_defer $? || return
+        if [[ -z "$(location_active_id)" ]]; then
+          _setup_register_location
+        else
+          location_save_current "$(location_active_id)"
+        fi
         location_schedule_apply
         return
         ;;
       Start*)
-        tui_confirm "This will reset setup state. Config files are preserved." || return 0
+        tui_confirm "This resets setup state. The restic repository on disk is not deleted." || return 0
+        setup_start_over
+        LOCATION_LAST_ID=""
+        tui_note "Setup cleared. Choose a destination."
         ;;
     esac
   elif [[ -n "$(config_get transport.backend)" ]]; then
@@ -486,8 +517,13 @@ cmd_setup() {
       Switch*) cmd_location switch; return ;;
       Replace*)
         _setup_pick_destination
-        _setup_init_repo || return 0
-        location_save_current "$(location_active_id)"
+        _setup_init_repo
+        _setup_accept_defer $? || return
+        if [[ -z "$(location_active_id)" ]]; then
+          _setup_register_location
+        else
+          location_save_current "$(location_active_id)"
+        fi
         location_schedule_apply
         return
         ;;
@@ -1268,7 +1304,8 @@ cmd_location() {
       local prev
       prev=$(location_active_id)
       _setup_pick_destination
-      _setup_init_repo || return 0
+      _setup_init_repo
+      _setup_accept_defer $? || return
       _setup_register_location
       local id="$LOCATION_LAST_ID"
       if [[ -n "$prev" && "$prev" != "$id" ]]; then
@@ -1345,8 +1382,29 @@ cmd_location() {
       fi
       location_drop "$id"
       ;;
+    schedule)
+      local target="${1:-}" val="${2:-}"
+      if [[ "$target" == on || "$target" == off ]]; then
+        val="$target"
+        target=$(location_active_id)
+      elif [[ -z "$target" ]]; then
+        target=$(location_active_id)
+      fi
+      [[ -n "$target" ]] || die "no active location; run: omaclone setup"
+      location_has "$target" || die "unknown location: $target"
+      if [[ -z "$val" ]]; then
+        printf '%s\n' "$(location_get "$target" schedule on)"
+        return 0
+      fi
+      [[ "$val" == on || "$val" == off ]] || die "usage: omaclone location schedule [ID] on|off"
+      location_set "$target" schedule "$val"
+      if [[ "$target" == "$(location_active_id)" ]]; then
+        location_schedule_apply "$target"
+      fi
+      log "location '$target' automatic clones: $val"
+      ;;
     *)
-      die "usage: omaclone location [list|add|switch ID|remove ID] [--yes]"
+      die "usage: omaclone location [list|add|switch ID|remove ID|schedule [ID] on|off] [--yes]"
       ;;
   esac
 }
@@ -1435,6 +1493,10 @@ cmd_install() {
     fi
   fi
   log "installed: ~/.local/bin/omaclone and plugin $PLUGIN_ID"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) log "note: add ~/.local/bin to PATH so new terminals find omaclone" ;;
+  esac
 }
 
 cmd_uninstall() {
@@ -1452,7 +1514,8 @@ cmd_uninstall() {
   fi
   omaclone_unlink_cli
   omaclone_unlink_plugin
-  log "removed PATH command, timers, and plugin symlink"
+  omaclone_uninstall_menu
+  log "removed PATH command, timers, plugin symlink, and Super+Space menu entries"
   log "config (~/.config/omaclone) and clones were not deleted"
   log "if the bar widget is still a git clone: omarchy plugin remove $PLUGIN_ID"
 }

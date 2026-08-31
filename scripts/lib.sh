@@ -114,6 +114,43 @@ PY
   log "add Omaclone entries to $dest (see omarchy-menu.jsonc)"
 }
 
+omaclone_uninstall_menu() {
+  local src dest
+  src="$NAS_BACKUP_ROOT/omarchy-menu.jsonc"
+  dest="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/omarchy-menu.jsonc"
+  [[ -f "$src" && -f "$dest" ]] || return 0
+  python3 - "$src" "$dest" <<'PY' || true
+import json
+import pathlib
+import re
+import sys
+
+src = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+dest_path = pathlib.Path(sys.argv[2])
+text = dest_path.read_text(encoding="utf-8")
+try:
+    dest = json.loads(text)
+except json.JSONDecodeError:
+    stripped = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    stripped = re.sub(r"(?m)//.*?$", "", stripped)
+    stripped = re.sub(r",(\s*[}\]])", r"\1", stripped)
+    dest = json.loads(stripped)
+if not isinstance(dest, dict):
+    raise SystemExit(0)
+changed = False
+for key in list(src.keys()):
+    if key in dest:
+        dest.pop(key, None)
+        changed = True
+if not changed:
+    raise SystemExit(0)
+if dest:
+    dest_path.write_text(json.dumps(dest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+else:
+    dest_path.unlink(missing_ok=True)
+PY
+}
+
 _NAS_BACKUP_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 NAS_BACKUP_ROOT="${NAS_BACKUP_ROOT:-$(cd "$_NAS_BACKUP_LIB_DIR/.." && pwd)}"
 
@@ -182,6 +219,26 @@ config_set() {
 
 config_drop() {
   config_py "$NAS_BACKUP_CONFIG" drop "$1"
+}
+
+setup_start_over() {
+  local id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    config_drop "locations.$id"
+    rm -f "$NAS_BACKUP_STATE_DIR/last-result-${id}.json" \
+          "$NAS_BACKUP_STATE_DIR/repo-stats-${id}.json" 2>/dev/null || true
+  done < <(location_ids 2>/dev/null || true)
+  config_drop locations
+  config_drop transport
+  config_drop destination
+  config_set restic.repo ""
+  config_set restic.initialized ""
+  config_set secrets.backend ""
+  config_set secrets.keyring_offer ""
+  config_set secrets.vault ""
+  config_set secrets.item ""
+  config_set secrets.field ""
 }
 
 retention_preset() {
@@ -506,13 +563,8 @@ repo_initialized() {
   [[ -n "$repo" ]] || return 1
   case "$repo" in
     s3:*|sftp:*)
-      [[ "$(config_get restic.initialized)" == 1 ]] && return 0
-      if [[ -f "$NAS_BACKUP_STATE_DIR/last-result.json" ]]; then
-        local status
-        status=$(jq -r '.status' "$NAS_BACKUP_STATE_DIR/last-result.json" 2>/dev/null || true)
-        [[ "$status" == "ok" ]] && return 0
-      fi
-      return 1
+      # A leftover last-result.json from another location must not count as init.
+      [[ "$(config_get restic.initialized)" == 1 ]]
       ;;
     *)
       [[ -f "$repo/config" ]]

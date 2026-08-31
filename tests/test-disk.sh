@@ -66,8 +66,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 source "$ROOT/scripts/lib.sh"
 source "$ROOT/scripts/transport-lib.sh"
 
-grep -q 'cfg_set transport.mode hybrid' "$ROOT/backends/transport/disk" || fail "setup should set mode=hybrid"
-echo "PASS: setup sets transport.mode hybrid"
+grep -q 'cfg_set transport.mode hot' "$ROOT/backends/transport/disk" || fail "setup should set mode=hot when mountpoint is set"
+grep -q 'cfg_set transport.mode cold' "$ROOT/backends/transport/disk" || fail "setup should set mode=cold for desktop/USB mounts"
+echo "PASS: setup sets transport.mode hot/cold"
 
 grep -q 'mkfs.ext4 -F -L omaclone' "$ROOT/backends/transport/disk" && fail "_format_device should not hardcode omaclone label"
 echo "PASS: _format_device does not hardcode label"

@@ -108,11 +108,12 @@ for line in sys.stdin:
   cfg_set transport.device "$path"
   cfg_set transport.fstype "$fstype"
   cfg_set transport.mountpoint "$mountpoint"
-  cfg_set transport.mode hybrid
-
   if [[ -n "$mountpoint" ]]; then
+    cfg_set transport.mode hot
     cfg_set restic.repo "${mountpoint%/}/omaclone/repo"
     sudo mkdir -p "$mountpoint"
+  else
+    cfg_set transport.mode cold
   fi
 }
 

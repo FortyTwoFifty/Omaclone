@@ -71,6 +71,7 @@ grep -q '"omaclone"' "$menu" || fail "menu missing omaclone entries"
 [[ ! -e "$HOME/.local/bin/omaclone" ]] || fail "omaclone uninstall left PATH command"
 [[ ! -e "$HOME/.config/omarchy/plugins/omaclone.plugin" ]] \
   || fail "omaclone uninstall left plugin symlink"
+[[ ! -f "$menu" ]] || fail "omaclone uninstall left an empty-or-ours-only menu file"
 
 mkdir -p "$HOME/.config/omarchy/plugins/omaclone.plugin"
 echo clone >"$HOME/.config/omarchy/plugins/omaclone.plugin/manifest.json"
@@ -88,6 +89,18 @@ d = json.load(open(sys.argv[1]))
 assert d["setup.keep"]["label"] == "Keep me", d
 assert d["omaclone"]["label"] == "User label", d
 assert "omaclone.clone" in d, d
+PY
+
+omaclone_uninstall_menu
+python3 - "$ext" <<'PY' || fail "menu uninstall python"
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+assert p.is_file(), "user keys should keep the file"
+d = json.loads(p.read_text())
+assert d["setup.keep"]["label"] == "Keep me", d
+assert "omaclone" not in d, d
+assert "omaclone.clone" not in d, d
 PY
 
 etc_rel_ok fido2 || fail "fido2 should be allowed"
