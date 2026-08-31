@@ -19,6 +19,17 @@ LEGACY_SCHEMA_NAME = "org.freedesktop.Secret.Generic"
 SERVICE = "omaclone"
 LEGACY_SERVICES = ("omaclone", "omarchy-backup", "nas-backup")
 DEFAULT_COLLECTION_LABEL = "omaclone"
+# Labels/paths gnome-keyring uses for the desktop collection. Writing there
+# rewrites the unencrypted GKeyFile and can make the daemon refuse to load it.
+_DESKTOP_COLLECTION_LABELS = frozenset(
+    {
+        "default",
+        "login",
+        "default keyring",
+        "login keyring",
+    }
+)
+_DESKTOP_ALIASES = ("default", "login")
 
 
 def _die(message: str, code: int = 1) -> int:
@@ -81,20 +92,54 @@ def _allow_create() -> bool:
     return sys.stdin.isatty() or sys.stderr.isatty()
 
 
+def _collection_path(collection: Any) -> str:
+    return (collection.get_object_path() or "").rstrip("/")
+
+
 def _is_session_collection(collection: Any) -> bool:
-    path = collection.get_object_path() or ""
-    return path.rstrip("/").endswith("/collection/session")
+    return _collection_path(collection).endswith("/collection/session")
 
 
-def _is_default_collection(collection: Any) -> bool:
-    path = (collection.get_object_path() or "").lower()
+def _forbidden_collection_label(label: str) -> bool:
+    return label.strip().lower() in _DESKTOP_COLLECTION_LABELS
+
+
+def _looks_like_desktop_collection(collection: Any) -> bool:
+    path = _collection_path(collection).lower()
     label = (collection.get_label() or "").lower()
+    if "default" in path or path.endswith("/collection/login"):
+        return True
+    return _forbidden_collection_label(label)
+
+
+def _alias_collection(Secret: Any, svc: Any, alias: str) -> Any | None:
+    try:
+        flags = getattr(Secret.CollectionFlags, "NONE", 0)
+        return Secret.Collection.for_alias_sync(svc, alias, flags, None)
+    except Exception:
+        return None
+
+
+def _is_default_collection(
+    collection: Any,
+    Secret: Any | None = None,
+    svc: Any | None = None,
+) -> bool:
+    if collection is None:
+        return False
     if _is_session_collection(collection):
         return False
-    if "default" in path or path.rstrip("/").endswith("/collection/login"):
+    if _looks_like_desktop_collection(collection):
         return True
-    if label in {"default keyring", "login", "default"}:
-        return True
+    if Secret is None or svc is None:
+        return False
+    our = _collection_path(collection)
+    if not our:
+        return False
+    for alias in _DESKTOP_ALIASES:
+        aliased = _alias_collection(Secret, svc, alias)
+        if aliased is not None and _collection_path(aliased) == our:
+            return True
     return False
 
 
@@ -107,7 +152,9 @@ def find_collection(Secret: Any, svc: Any) -> Any | None:
         return None
     want = _collection_label()
     for collection in collections:
-        if collection.get_label() == want and not _is_default_collection(collection):
+        if collection.get_label() == want and not _is_default_collection(
+            collection, Secret, svc
+        ):
             return collection
     return None
 
@@ -127,16 +174,22 @@ def ensure_collection(Secret: Any, svc: Any, *, create: bool) -> Any:
             "Omaclone keyring collection is missing. Run omaclone setup "
             "to create it (you will be asked for a keyring password)."
         )
+    label = _collection_label()
+    if _forbidden_collection_label(label):
+        raise RuntimeError(
+            f"refusing to create a collection named {label!r}; that is the "
+            "desktop keyring"
+        )
     # May prompt: that is how GNOME Keyring encrypts a new collection at rest.
     # Never pass alias=default/login — that would return the desktop keyring.
     collection = Secret.Collection.create_sync(
         svc,
-        _collection_label(),
+        label,
         None,
         Secret.CollectionCreateFlags.NONE,
         None,
     )
-    if collection is None or _is_default_collection(collection):
+    if collection is None or _is_default_collection(collection, Secret, svc):
         raise RuntimeError("refusing to use the default GNOME keyring collection")
     unlock_collection(svc, collection)
     return collection
@@ -146,8 +199,15 @@ def _attrs(attribute: str) -> dict[str, str]:
     return {"service": SERVICE, "attribute": attribute}
 
 
-def store_item(Secret: Any, collection: Any, attribute: str, secret: str, label: str) -> None:
-    if _is_default_collection(collection):
+def store_item(
+    Secret: Any,
+    svc: Any,
+    collection: Any,
+    attribute: str,
+    secret: str,
+    label: str,
+) -> None:
+    if _is_default_collection(collection, Secret, svc):
         raise RuntimeError("refusing to write to the default GNOME keyring collection")
     value = Secret.Value.new(secret, -1, "text/plain")
     Secret.Item.create_sync(
@@ -238,7 +298,7 @@ def cmd_put(attribute: str, label: str) -> int:
         Secret = _gi_secret()
         svc = _service(Secret)
         collection = ensure_collection(Secret, svc, create=_allow_create())
-        store_item(Secret, collection, attribute, secret, label)
+        store_item(Secret, svc, collection, attribute, secret, label)
     except Exception as exc:
         return _die(str(exc))
     return 0
@@ -263,7 +323,7 @@ def cmd_get(attribute: str) -> int:
             collection = ensure_collection(Secret, svc, create=True)
         if collection is not None:
             try:
-                store_item(Secret, collection, attribute, secret, f"omaclone {attribute}")
+                store_item(Secret, svc, collection, attribute, secret, f"omaclone {attribute}")
             except Exception:
                 pass
         sys.stdout.write(secret)
