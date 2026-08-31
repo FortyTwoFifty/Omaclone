@@ -47,7 +47,7 @@ Item {
       var loc = src[i]
       if (!loc || loc.source === "discovered") continue
       var b = String(loc.backend || "")
-      if ((b === "disk" || b === "nfs" || b === "cifs") && loc.connected !== true) return true
+      if ((b === "disk" || b === "nfs" || b === "cifs" || b === "sftp") && loc.connected !== true) return true
     }
     return false
   }
@@ -264,8 +264,11 @@ Item {
       var stdout = String(statusStdout.text || "")
       var stderr = String(statusStderr.text || "")
       if (stdout.trim() !== "") { root.applyStatus(stdout); root._fsWatchArmed = true; }
-      else if (stderr.trim() !== "") root.lastError = stderr.trim()
-      else if (exitCode !== 0) root.lastError = "Status helper failed"
+      else {
+        root.lastError = stderr.trim() || (exitCode !== 0 ? "Status helper failed" : "Failed to parse backup status")
+        root.severity = "error"
+        root.issueTitle = "Status unreadable"
+      }
     }
   }
 
@@ -297,6 +300,7 @@ Item {
   }
 
   function dismissIssue() {
+    switchError = ""
     if (ackProc.running) ackProc.running = false
     ackProc.command = [cliPath, "status", "--ack"]
     ackProc.running = true

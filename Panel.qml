@@ -51,15 +51,23 @@ Panel {
 
   readonly property var keepPresets: Model.retentionPresets()
 
-  readonly property var actions: [
-    { id: "setup", title: "Set up Omaclone", subtitle: "Create a clone or restore from NAS, disk, or cloud", command: ["setup"] },
-    { id: "clone", title: "Clone now", subtitle: "Save an identity clone", command: ["clone"] },
-    { id: "keep", title: "Change keep plan…", subtitle: "How long clones are retained", command: [] },
-    { id: "snapshots", title: "Clones", subtitle: "List restic snapshots of this identity", command: ["snapshots"] },
-    { id: "forget", title: "Remove clones…", subtitle: "Delete clones from this location", command: ["forget"] },
-    { id: "forget-location", title: "Forget location…", subtitle: "Drop a saved location; does not erase the drive", command: ["location", "remove"] },
-    { id: "restore", title: "Restore…", subtitle: "Clone this identity onto this machine", command: ["restore"] }
-  ]
+  readonly property var actions: {
+    var configured = backup.configured
+    var complete = backup.setupComplete
+    var rows = []
+    if (!configured || !complete)
+      rows.push({ id: "setup", title: configured ? "Continue setup" : "Set up Omaclone", subtitle: "Create a clone or restore from NAS, disk, or cloud", command: ["setup"] })
+    if (configured) {
+      rows.push({ id: "clone", title: "Clone now", subtitle: "Save an identity clone", command: ["clone"] })
+      rows.push({ id: "keep", title: "Change keep plan…", subtitle: "How long clones are retained", command: [] })
+      rows.push({ id: "snapshots", title: "Clones", subtitle: "List restic snapshots of this identity", command: ["snapshots"] })
+      rows.push({ id: "add-location", title: "Add location…", subtitle: "Register another NAS, disk, or cloud", command: ["location", "add"] })
+      rows.push({ id: "forget", title: "Remove clones…", subtitle: "Delete clones from this location", command: ["forget"] })
+      rows.push({ id: "forget-location", title: "Forget location…", subtitle: "Drop a saved location; does not erase the drive", command: ["location", "remove"] })
+      rows.push({ id: "restore", title: "Restore…", subtitle: "Clone this identity onto this machine", command: ["restore"] })
+    }
+    return rows
+  }
 
   readonly property string heroMeta: {
     if (backup.switching) return "Switching location…"
@@ -85,8 +93,10 @@ Panel {
     if (!backup.configured) return "not set"
     var labels = Model.connectedLabels(backup.locations)
     if (!labels.length) return "none connected"
-    if (labels.length === 1) return labels[0] + " connected"
-    return labels.join(" · ") + " connected"
+    var hint = labels.length === 1 ? labels[0] + " connected" : labels.join(" · ") + " connected"
+    if (backup.repoSizeText && backup.repoSizeText !== "—")
+      hint += " · " + backup.repoSizeText
+    return hint
   }
   readonly property string keepText: backup.retentionLabel || Model.retentionLabel(backup.retentionPreset)
   readonly property string keepShort: Model.retentionShort(backup.retentionPreset)
@@ -125,7 +135,7 @@ Panel {
   }
 
   function openLocations() {
-    if (root.paneCount < 1) return
+    if (root.paneCount < 1 && root.installedCount < 1) return
     cursorActive = true
     focusSection = "locations"
     var list = root.paneLocations
@@ -204,6 +214,7 @@ Panel {
     if (focusSection === "retention") selectRetention(retentionIndex)
     else if (focusSection === "locations") selectLocation(locationIndex)
     else if (focusSection === "confirm") confirmRetention()
+    else if (focusSection === "banner") backup.dismissIssue()
     else if (focusSection === "actions") launchAction(actionIndex)
   }
 
@@ -230,6 +241,7 @@ Panel {
     BarIconButton {
       id: button
       bar: root.bar
+      Accessible.name: tooltipText
     iconComponent: Component {
       Item {
         OmacloneIcon {
@@ -264,6 +276,14 @@ Panel {
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
       font.bold: true
+      MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        onPressed: function(mouse) {
+          if (mouse.button === Qt.RightButton) backup.refresh()
+          else root.toggle()
+        }
+      }
     }
   }
 
@@ -293,9 +313,12 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "r" || t === "R") backup.refresh()
-        else if (t === "b" || t === "B") root.launchAction(1)
-        else if (t === "k" || t === "K") root.openRetention()
+        else if (t === "b" || t === "B") {
+          if (backup.configured) backup.launchTui(["clone"])
+        }
+        else if (t === "k" || t === "K") { if (backup.configured) root.openRetention() }
         else if (t === "l" || t === "L") root.openLocations()
+        else if (t === "d" || t === "D") backup.dismissIssue()
       }
 
       Flickable {
@@ -421,7 +444,7 @@ Panel {
               label: "STORAGE"
               value: root.storageText
               hint: root.storageHintText
-              clickable: root.installedCount >= 1
+              clickable: root.paneCount >= 1 || root.installedCount >= 1
               onClicked: root.openLocations()
             }
 
@@ -468,7 +491,12 @@ Panel {
 
             Text {
               width: parent.width
-              text: "Switch to " + Model.retentionLabel(root.pendingPreset) + "? Clones outside this plan will be pruned."
+              text: {
+                var prune = Model.retentionTighter(root.pendingPreset, backup.retentionPreset)
+                return prune
+                  ? "Switch to " + Model.retentionLabel(root.pendingPreset) + "? Clones outside this plan will be pruned."
+                  : "Switch to " + Model.retentionLabel(root.pendingPreset) + "? Existing clones are kept."
+              }
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -485,8 +513,8 @@ Panel {
               }
               ConfirmButton {
                 width: (column.width - Style.space(8)) / 2
-                label: "Confirm prune"
-                destructive: true
+                label: Model.retentionTighter(root.pendingPreset, backup.retentionPreset) ? "Confirm prune" : "Confirm"
+                destructive: Model.retentionTighter(root.pendingPreset, backup.retentionPreset)
                 onClicked: root.confirmRetention()
               }
             }
@@ -577,11 +605,12 @@ Panel {
 
         ConfirmButton {
           width: banner.isError ? (bannerCol.width - Style.space(8)) / 2 : bannerCol.width
-          label: backup.issueKind === "password_locked" ? "Clone now" : "Retry clone"
+          label: backup.switchError !== "" ? "Retry switch" : (backup.issueKind === "password_locked" ? "Clone now" : "Retry clone")
           destructive: false
           onClicked: {
-            backup.launchTui(["clone"])
-            root.closeForPopoutSwitch()
+            if (backup.switchError !== "") backup.switchLocation(backup.locationId)
+            else backup.launchTui(["clone"])
+            if (backup.switchError === "") root.closeForPopoutSwitch()
           }
         }
         ConfirmButton {

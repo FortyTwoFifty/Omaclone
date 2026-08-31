@@ -245,6 +245,18 @@ retention_preset() {
   config_get retention.preset standard
 }
 
+retention_rank() {
+  local preset="${1:-}"
+  case "$preset" in
+    last-5) printf '%s\n' 1 ;;
+    week) printf '%s\n' 2 ;;
+    month) printf '%s\n' 3 ;;
+    quarter) printf '%s\n' 4 ;;
+    year) printf '%s\n' 5 ;;
+    *) printf '%s\n' 6 ;;
+  esac
+}
+
 retention_label() {
   local preset="${1:-$(retention_preset)}"
   case "$preset" in

@@ -46,6 +46,8 @@ function parseStatus(raw) {
   } catch (e) {
     var failed = defaultStatus()
     failed.lastError = "Failed to parse backup status"
+    failed.severity = "error"
+    failed.issueTitle = "Status unreadable"
     return failed
   }
 }
@@ -121,7 +123,10 @@ function storageKind(loc) {
   if (!loc) return ""
   var b = String(loc.backend || "")
   if (b === "nfs" || b === "cifs" || b === "sftp") return "NAS"
-  if (b === "disk") return "USB"
+  if (b === "disk") {
+    if (loc.mode === "cold" || /usb|stick/i.test(String(loc.label || ""))) return "USB"
+    return "Extra disk"
+  }
   if (b === "s3") return "Cloud"
   if (b === "local") return "Local"
   return loc.label || loc.id || ""
@@ -178,6 +183,22 @@ function retentionLabel(id) {
     if (list[i].id === id) return list[i].label
   }
   return "7 days / 4 weeks / 6 months / 2 years"
+}
+
+function retentionRank(id) {
+  switch (id) {
+    case "last-5": return 1
+    case "week": return 2
+    case "month": return 3
+    case "quarter": return 4
+    case "year": return 5
+    case "standard": return 6
+    default: return 6
+  }
+}
+
+function retentionTighter(next, current) {
+  return retentionRank(next) < retentionRank(current)
 }
 
 function retentionShort(id) {

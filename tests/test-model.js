@@ -6,7 +6,7 @@ const assert = require("assert");
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8");
 const ctx = { console };
 vm.createContext(ctx);
-vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectedLabels, locationCloneText, retentionPresets, retentionLabel, retentionShort };", ctx);
+vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectedLabels, locationCloneText, retentionPresets, retentionLabel, retentionShort, retentionRank, retentionTighter };", ctx);
 const M = ctx.Model;
 
 function fixture(overrides) {
@@ -92,14 +92,19 @@ assert.strictEqual(M.locationCloneText({ snapshotCount: 3, connected: false }), 
 assert.strictEqual(M.locationCloneText({}), "");
 assert.strictEqual(M.locationCloneText({ snapshotCount: 0, connected: true }), "0 clones");
 
-assert.strictEqual(M.storageKind({ backend: "disk" }), "USB");
+assert.strictEqual(M.storageKind({ backend: "disk" }), "Extra disk");
+assert.strictEqual(M.storageKind({ backend: "disk", mode: "cold" }), "USB");
+assert.strictEqual(M.storageKind({ backend: "disk", label: "USB stick" }), "USB");
 assert.strictEqual(M.storageKind({ backend: "s3" }), "Cloud");
 assert.strictEqual(M.storageKind({ backend: "local" }), "Local");
 assert.strictEqual(M.storageKind({ backend: "nfs" }), "NAS");
 
 const broken = M.parseStatus("{not json");
 assert.strictEqual(broken.lastError, "Failed to parse backup status");
+assert.strictEqual(broken.severity, "error");
 assert.ok(Array.isArray(broken.locations));
+assert.ok(M.retentionTighter("last-5", "standard"));
+assert.ok(!M.retentionTighter("standard", "week"));
 
 const arr = M.parseStatus("[]");
 assert.ok(arr.locations);

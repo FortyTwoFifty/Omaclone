@@ -811,7 +811,14 @@ cmd_retention() {
       fi
       config_set retention.preset "$preset"
       log "retention set to $preset ($(retention_label "$preset"))"
-      cmd_prune
+      local cur_rank new_rank
+      cur_rank=$(retention_rank "$current")
+      new_rank=$(retention_rank "$preset")
+      if (( new_rank < cur_rank )); then
+        cmd_prune
+      else
+        log "keep plan widened; not pruning existing clones"
+      fi
       ;;
     *)
       die "usage: omaclone retention [show|set PRESET] [--yes]"
@@ -1237,8 +1244,8 @@ cmd_status() {
 
   local severity=ok issueTitle="" issueKind=""
   if [[ -z "$repo" ]]; then
-    severity=warning
-    issueTitle="Not configured"
+    severity=ok
+    issueTitle=""
     [[ -n "$message" ]] || message="Run Set up Omaclone to create or restore a clone."
   elif setup_is_unfinished; then
     severity=warning
