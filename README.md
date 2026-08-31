@@ -78,10 +78,10 @@ Installed only for the transport you pick.
 | When | Package | Provides |
 |---|---|---|
 | NAS over NFS | `nfs-utils` | `mount.nfs` / `mount.nfs4` |
-| NAS over SMB | `cifs-utils` | `mount.cifs`. Share password goes in the keyring (`libsecret`) |
+| NAS over SMB | `cifs-utils` | `mount.cifs`. Share password goes in Omaclone’s GNOME Keyring collection (`libsecret`) |
 | NAS over SFTP | `openssh` | `ssh`, `scp` |
 | Extra disk | — | Uses `lsblk` / `findmnt`. `udisksctl` mounts a cold disk if no mountpoint is set. Formatting a blank disk needs `mkfs.ext4` (`e2fsprogs`) |
-| S3-compatible cloud | — | Restic’s native S3 backend. Access keys go in the keyring (`libsecret`), never `config.toml` |
+| S3-compatible cloud | — | Restic’s native S3 backend. Access keys go in Omaclone’s GNOME Keyring collection, never `config.toml` |
 | Already-mounted path | — | No extra packages |
 
 ### Optional — restic password
@@ -90,7 +90,7 @@ Pick one in setup. Paste-each-time needs nothing extra and cannot run from the d
 
 | Backend | Package / CLI | Install |
 |---|---|---|
-| GNOME Keyring | `libsecret` (`secret-tool`) | pacman. Also used to store S3/SMB keys |
+| GNOME Keyring | `libsecret` + `python-gobject` | pacman. Restic / S3 / SMB secrets go in a dedicated Omaclone collection, not the default desktop keyring |
 | 1Password | `op` | Official zip from AgileBits into `~/.local/bin/op` (needs `unzip`) |
 | Proton Pass | `pass-cli` | Official installer from proton.me, after confirmation |
 | Prompt each time | — | No extra CLI |
@@ -230,7 +230,7 @@ Right-click the chip (or press `r` in the pane) to refresh. Opening the pane als
 
 Daily clone is `omaclone.timer` (02:00, with jitter). Weekly prune is `omaclone-prune.timer`. The timer clones `$HOME` without a password prompt; `/etc` and package lists are included only when `sudo` can run non-interactively (Omarchy’s optional passwordless sudo).
 
-Unattended clone needs a restic password with no terminal. **GNOME Keyring** can do that once the session keyring is unlocked: if the 02:00 timer fires while it is still locked, the chip turns the warning color and Omaclone waits, then clones automatically on the next unlock. **1Password** (`op`) and **Proton Pass** (`pass-cli`) must already be signed in; they cannot unlock themselves from a timer. If you keep using those instead of storing the restic password in the keyring, a locked or signed-out manager skips the automatic clone, the chip turns the warning color, and the pane says the last clone did not run. Clone from the pane after signing in, or accept the keyring offer so the timer can run on its own. The prompt-each-time backend never runs from the timer.
+Unattended clone needs a restic password with no terminal. **GNOME Keyring** can do that once Omaclone’s collection is unlocked: if the 02:00 timer fires while it is still locked, the chip turns the warning color and Omaclone waits, then clones automatically on the next unlock. **1Password** (`op`) and **Proton Pass** (`pass-cli`) must already be signed in; they cannot unlock themselves from a timer. If you keep using those instead of storing the restic password in the keyring, a locked or signed-out manager skips the automatic clone, the chip turns the warning color, and the pane says the last clone did not run. Clone from the pane after signing in, or accept the keyring offer so the timer can run on its own. The prompt-each-time backend never runs from the timer.
 
 ---
 
@@ -299,7 +299,7 @@ Edit `config/excludes.txt` (gitignore-style, relative to `$HOME`) and `config/ha
 
 - Restic password is **never** in `config.toml`, shell history, journald, or `ps`.
 - Paste-once uses `gum input --password` and a mode `600` tmpfs file, shredded when restic exits.
-- SMB passwords and S3 keys use the keyring (or a prompt). Never on `mount.cifs` argv.
+- SMB passwords and S3 keys use Omaclone’s own GNOME Keyring collection (or a prompt). Never the default desktop keyring, never `mount.cifs` argv. Writing to an unencrypted default keyring can make gnome-keyring refuse to load it after a secret with a newline is stored (Proton VPN and similar), which drops every other app’s saved passwords.
 - Do not reuse login, LUKS, or password-manager master passwords for the restic repo.
 - Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`) contain **no secrets**.
 - LUKS headers are not collected.
@@ -340,6 +340,7 @@ Drop-in backends: `~/.config/omaclone/backends/<secrets|transport|notify>/<id>`.
 ./tests/test-discover.sh
 ./tests/test-forget.sh
 ./tests/test-secrets-retry.sh
+./tests/test-keyring-store.sh
 ./tests/test-install.sh
 node ./tests/test-model.js
 omarchy plugin validate .

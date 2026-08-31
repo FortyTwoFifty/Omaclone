@@ -565,8 +565,8 @@ password_offer_keyring_store() {
   [[ "$offer" != "declined" && "$offer" != "stored" ]] || return 0
   [[ -n "${NAS_BACKUP_PWFILE:-}" && -s "${NAS_BACKUP_PWFILE:-}" ]] || return 0
 
-  if ! have secret-tool; then
-    if tui_confirm "Install libsecret (GNOME Keyring) so omaclone can store the password?"; then
+  if ! nas_backup_backend_available secrets keyring; then
+    if tui_confirm "Install GNOME Keyring support (libsecret) so omaclone can store the password?"; then
       nas_backup_backend_ensure secrets keyring || return 0
     else
       return 0
@@ -1108,22 +1108,12 @@ TRANSPORT_SECRET_SERVICE="omaclone"
 
 transport_secret_put() {
   local attr="$1"
-  if ! have secret-tool; then
-    source "$NAS_BACKUP_ROOT/scripts/deps.sh" 2>/dev/null || true
-    deps_ensure_pacman libsecret secret-tool || die "secret-tool is required to store '$attr'"
-  fi
-  secret-tool store --label="omaclone $attr" service "$TRANSPORT_SECRET_SERVICE" attribute "$attr"
+  python3 "$NAS_BACKUP_ROOT/scripts/keyring_store.py" put "$attr" --label "omaclone $attr"
 }
 
 transport_secret_get() {
   local attr="$1"
-  local svc
-  if have secret-tool; then
-    for svc in omaclone omarchy-backup nas-backup; do
-      secret-tool lookup service "$svc" attribute "$attr" 2>/dev/null && return 0
-    done
-  fi
-  return 1
+  python3 "$NAS_BACKUP_ROOT/scripts/keyring_store.py" get "$attr"
 }
 
 transport_secret_prompt_and_store() {

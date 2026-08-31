@@ -35,6 +35,7 @@ Password handling rules (enforced for shipped backends, required for drop-ins):
 - Never `restic --password` / `-p`
 - Never write the password to `$HISTFILE`, journald, or `config.toml`
 - `get` stdout is a pipe, not a terminal
+- Shipped `keyring` stores via `scripts/keyring_store.py` into a dedicated GNOME Keyring collection, never the default desktop collection.
 
 ## Transport
 
