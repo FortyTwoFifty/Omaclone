@@ -92,3 +92,30 @@ credential_keys() { return 0; }
 discover() { return 0; }
 pre_restic() { return 0; }
 post_restic() { return 0; }
+
+cifs_validate_unc() {
+  local uri="${1:-}"
+  uri="${uri#"${uri%%[![:space:]]*}"}"
+  uri="${uri%"${uri##*[![:space:]]}"}"
+  if [[ -z "$uri" ]]; then
+    printf '%s\n' "SMB path is required (//server/share)." >&2
+    return 1
+  fi
+  if [[ "$uri" == *$'\n'* || "$uri" == *$'\t'* || "$uri" == *' '* ]]; then
+    printf '%s\n' "SMB path must be a single //server/share value." >&2
+    return 1
+  fi
+  if [[ "$uri" == *','* ]]; then
+    printf '%s\n' "SMB path must not contain commas (they become extra mount options)." >&2
+    return 1
+  fi
+  if [[ "$uri" != //*/* ]]; then
+    printf '%s\n' "SMB path must look like //server/share." >&2
+    return 1
+  fi
+  if [[ "$uri" == *..* ]]; then
+    printf '%s\n' "SMB path must not contain .." >&2
+    return 1
+  fi
+  return 0
+}

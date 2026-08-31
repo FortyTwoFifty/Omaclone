@@ -10,6 +10,8 @@ tests=(
   tests/test-retention.sh
   tests/test-locations.sh
   tests/test-nfs.sh
+  tests/test-cifs.sh
+  tests/test-sftp-url.sh
   tests/test-disk.sh
   tests/test-deps.sh
   tests/test-discover.sh

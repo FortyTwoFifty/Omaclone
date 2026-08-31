@@ -26,9 +26,9 @@ _ssh_cmd() {
   local port
   port=$(cfg transport.port 22)
   if [[ "$port" == 22 || -z "$port" ]]; then
-    ssh -o BatchMode=yes -o ConnectTimeout=8 "$(_ssh_target)" "$@"
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 "$(_ssh_target)" "$@"
   else
-    ssh -o BatchMode=yes -o ConnectTimeout=8 -p "$port" "$(_ssh_target)" "$@"
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 -p "$port" "$(_ssh_target)" "$@"
   fi
 }
 
@@ -36,9 +36,9 @@ _scp_cmd() {
   local port
   port=$(cfg transport.port 22)
   if [[ "$port" == 22 || -z "$port" ]]; then
-    scp -o BatchMode=yes "$@"
+    scp -o BatchMode=yes -o StrictHostKeyChecking=yes "$@"
   else
-    scp -o BatchMode=yes -P "$port" "$@"
+    scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$port" "$@"
   fi
 }
 
@@ -63,7 +63,7 @@ setup() {
   host=$(cfg transport.host "")
   user=$(cfg transport.username "$USER")
   port=$(cfg transport.port 22)
-  remote=$(cfg transport.remote_path "/backup/omarchy")
+  remote=$(cfg transport.remote_path "omaclone")
   host=$(gum_input "SSH host" "$host")
   user=$(gum_input "SSH username" "$user")
   port=$(gum_input "SSH port" "$port")

@@ -69,4 +69,14 @@ setup_start_over
 [[ -f "$fake_repo/config" ]] || fail "start over deleted the restic repo on disk"
 [[ "$(cat "$fake_repo/config")" == keep ]] || fail "start over mutated the restic repo"
 
+omaclone_test_cfg transport.backend s3
+omaclone_test_cfg destination.profile cloud
+omaclone_test_cfg transport.endpoint example.r2.cloudflarestorage.com
+omaclone_test_cfg transport.bucket mybucket
+omaclone_test_cfg restic.repo "s3:https://example.r2.cloudflarestorage.com/mybucket/omaclone"
+card=$(write_recovery_card)
+grep -q "plugin add" "$card" || fail "s3 recovery card should use plugin add"
+grep -q "/path/to/clone/restore" "$card" && fail "s3 recovery card must not use USB restore path"
+grep -qi "s3 / cloud" "$card" || fail "s3 recovery card should mention cloud"
+
 echo OK

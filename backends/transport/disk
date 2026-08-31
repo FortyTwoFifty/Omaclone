@@ -159,7 +159,7 @@ mount() {
 
   if [[ -n "$mountpoint" ]]; then
     sudo_noninteractive mkdir -p "$mountpoint" || exit 1
-    sudo_noninteractive mount -t "$fstype" -o noatime "$src" "$mountpoint" || exit 1
+    sudo_noninteractive mount -t "$fstype" -o noatime,nosuid,nodev,noexec "$src" "$mountpoint" || exit 1
   elif have_cmd udisksctl; then
     udisksctl mount -b "$src" >/dev/null 2>&1 || { printf '%s\n' "udisksctl mount failed for $src" >&2; exit 1; }
   else
@@ -174,7 +174,18 @@ mount() {
 }
 
 unmount() {
-  return 0
+  local uuid mountpoint src live
+  [[ "$(cfg transport.mode)" == cold ]] || return 0
+  uuid=$(cfg transport.uuid)
+  mountpoint=$(cfg transport.mountpoint "")
+  src="/dev/disk/by-uuid/$uuid"
+  live=$(findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1)
+  [[ -n "$live" ]] || return 0
+  if [[ -n "$mountpoint" ]]; then
+    sudo_noninteractive umount "$live" 2>/dev/null || true
+  elif have_cmd udisksctl; then
+    udisksctl unmount -b "$src" >/dev/null 2>&1 || true
+  fi
 }
 
 ready() {
@@ -191,7 +202,7 @@ pre_restic() {
 }
 
 post_restic() {
-  return 0
+  unmount
 }
 
 discover() {

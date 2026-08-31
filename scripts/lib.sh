@@ -1266,8 +1266,34 @@ write_recovery_card() {
   local disk_uuid
   disk_uuid=$(config_get transport.uuid)
   local restore_hint="/path/to/clone/restore"
-  if [[ -n "$mountpoint" ]]; then
+  if [[ "$transport" == s3 ]]; then
+    restore_hint=""
+  elif [[ -n "$mountpoint" ]]; then
     restore_hint="$(omaclone_kit_dir "$mountpoint")/restore"
+  fi
+  local cloud_block=""
+  if [[ "$transport" == s3 ]]; then
+    cloud_block=$(cat <<CLOUDEOF
+**S3 / cloud** — there is no ./restore file on the bucket. After Omarchy is installed:
+
+    omarchy plugin add ${PLUGIN_REPO_URL} --enable
+    ~/.config/omarchy/plugins/omaclone.plugin/scripts/omaclone restore
+
+Re-enter the S3 access keys when setup asks. They are not on this card.
+CLOUDEOF
+)
+  else
+    cloud_block=$(cat <<CLOUDEOF
+**USB / extra disk / NAS share** — plug in or mount the backup location, then:
+
+    ${restore_hint}
+
+**Cloud, or you only have this plugin** — after Omarchy is installed:
+
+    omarchy plugin add ${PLUGIN_REPO_URL} --enable
+    ~/.config/omarchy/plugins/omaclone.plugin/scripts/omaclone restore
+CLOUDEOF
+)
   fi
   cat >"$dest" <<EOF
 # Omaclone recovery
@@ -1284,14 +1310,7 @@ This card has **no passwords and no access keys**.
 1. Install Omarchy (use the same username if you can).
 2. Restore using whichever you still have:
 
-**USB / extra disk / NAS share** — plug in or mount the backup location, then:
-
-    ${restore_hint}
-
-**Cloud, or you only have this plugin** — after Omarchy is installed:
-
-    omarchy plugin add ${PLUGIN_REPO_URL} --enable
-    ~/.config/omarchy/plugins/omaclone.plugin/scripts/omaclone restore
+${cloud_block}
 
 The restic repository password lives in your password manager or keyring, not here.
 EOF

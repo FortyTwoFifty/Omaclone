@@ -10,7 +10,19 @@ from pathlib import Path
 SKIP_DIRS = {".git", "__pycache__", "tests"}
 HASH_PATHS = ("scripts/omaclone", "scripts/restore", "scripts/lib.sh")
 
-def copy_tree(src: Path, dest: Path) -> None:
+def plugin_version(root: Path) -> str:
+    manifest = root / "manifest.json"
+    if not manifest.is_file():
+        return ""
+    for raw in manifest.read_text(encoding="utf-8").splitlines():
+        if '"version"' in raw:
+            return raw.split(":", 1)[-1].strip().strip('",')
+    return ""
+
+
+def copy_tree(src: Path, dest: Path, *, skip_tree: bool = False) -> None:
+    if skip_tree and dest.is_dir():
+        return
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -33,7 +45,12 @@ def main(argv: list[str]) -> int:
     dest = Path(argv[2]).resolve()
     config = Path(argv[3])
     dest.mkdir(parents=True, exist_ok=True)
-    copy_tree(root, dest / "omaclone")
+    version = plugin_version(root)
+    marker = dest / ".omaclone-bootstrap"
+    skip_tree = False
+    if marker.is_file() and version and marker.read_text(encoding="utf-8").strip() == f"omaclone {version}":
+        skip_tree = (dest / "omaclone" / "scripts" / "omaclone").is_file()
+    copy_tree(root, dest / "omaclone", skip_tree=skip_tree)
     restore_src = root / "scripts" / "restore"
     restore_dst = dest / "restore"
     shutil.copy2(restore_src, restore_dst)
@@ -51,15 +68,6 @@ def main(argv: list[str]) -> int:
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             lines.append(f"{digest}  {rel}")
     (dest / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    marker = dest / ".omaclone-bootstrap"
-    version = ""
-    manifest = root / "manifest.json"
-    if manifest.is_file():
-        text = manifest.read_text(encoding="utf-8")
-        for raw in text.splitlines():
-            if '"version"' in raw:
-                version = raw.split(":", 1)[-1].strip().strip('",')
-                break
     marker.write_text(f"omaclone {version}\n", encoding="utf-8")
     print(f"bootstrap installed at {dest}", file=sys.stderr)
     return 0

@@ -45,6 +45,7 @@ _smb_cred_file() {
 setup() {
   ensure_cifs_utils
   source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  source "$NAS_BACKUP_ROOT/scripts/nfs-lib.sh"
 
   local uri mountpoint user
   uri=$(cfg transport.uri "")
@@ -53,20 +54,23 @@ setup() {
   uri=$(gum_input "UNC path (//server/share)" "$uri")
   mountpoint=$(gum_input "Local mountpoint" "$mountpoint")
   user=$(gum_input "SMB username" "$user")
-  [[ -n "$uri" ]] || { printf '%s\n' "SMB path is required" >&2; exit 1; }
+  cifs_validate_unc "$uri" || exit 1
+  nfs_validate_mountpoint "$mountpoint" || exit 1
+  [[ -n "$user" ]] || { printf '%s\n' "SMB username is required" >&2; exit 1; }
+
+  echo "Daily clones run only while this share is mounted. Use NFS automount for an always-on NAS." >&2
+  if ! transport_secret_get smb-password >/dev/null; then
+    echo "Store the SMB password in the keyring (not in config)." >&2
+    transport_secret_prompt_and_store smb-password "SMB password for $user" || exit 1
+  elif command -v gum >/dev/null 2>&1 && gum confirm "Replace the stored SMB password?"; then
+    transport_secret_prompt_and_store smb-password "SMB password for $user" || exit 1
+  fi
+
   cfg_set transport.backend cifs
   cfg_set transport.uri "$uri"
   cfg_set transport.mountpoint "$mountpoint"
   cfg_set transport.username "$user"
   cfg_set restic.repo "${mountpoint%/}/omaclone/repo"
-
-  echo "Daily clones run only while this share is mounted. Use NFS automount for an always-on NAS." >&2
-  if ! transport_secret_get smb-password >/dev/null; then
-    echo "Store the SMB password in the keyring (not in config)." >&2
-    transport_secret_prompt_and_store smb-password "SMB password for $user"
-  elif command -v gum >/dev/null 2>&1 && gum confirm "Replace the stored SMB password?"; then
-    transport_secret_prompt_and_store smb-password "SMB password for $user"
-  fi
 }
 
 mount() {
@@ -102,7 +106,7 @@ mount() {
   chmod 600 "$cred"
   local rc=0
   sudo_noninteractive mount -t cifs "$uri" "$mountpoint" \
-    -o "credentials=${cred},uid=$(id -u),gid=$(id -g),file_mode=0600,dir_mode=0700,nosuid,nodev,noexec,_netdev" \
+    -o "credentials=${cred},uid=$(id -u),gid=$(id -g),file_mode=0600,dir_mode=0700,vers=3.0,nosuid,nodev,noexec,_netdev" \
     || rc=$?
   _cifs_shred_cred "$cred"
   trap - EXIT INT TERM HUP

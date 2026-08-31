@@ -333,7 +333,7 @@ Wants=network-online.target
 What=$uri
 Where=$mountpoint
 Type=$(nfs_fstype)
-Options=rw,hard,noatime,_netdev
+Options=rw,hard,noatime,nosuid,nodev,noexec,proto=tcp,_netdev
 EOF
 
   cat >"$tmp/$auto_name" <<EOF

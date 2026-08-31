@@ -76,7 +76,7 @@ setup() {
       OMACLONE_NFS_ALREADY_PROBED=1 "$NAS_BACKUP_ROOT/scripts/install-nfs-mount.sh" "$uri" "$mountpoint"
     else
       sudo mkdir -p "$mountpoint"
-      sudo mount -t "$(_nfs_type)" -o rw,hard,nconnect=8,noatime,_netdev "$uri" "$mountpoint"
+      sudo mount -t "$(_nfs_type)" -o rw,hard,nconnect=8,noatime,nosuid,nodev,noexec,proto=tcp,_netdev "$uri" "$mountpoint"
     fi
   fi
 
@@ -118,9 +118,9 @@ mount() {
   sudo_noninteractive mkdir -p "$mountpoint" || exit 1
   local fstype opts
   fstype=$(_nfs_type)
-  opts="rw,hard,nconnect=8,noatime,_netdev"
+  opts="rw,hard,nconnect=8,noatime,nosuid,nodev,noexec,proto=tcp,_netdev"
   if ! sudo_noninteractive mount -t "$fstype" -o "$opts" "$uri" "$mountpoint"; then
-    sudo_noninteractive mount -t "$fstype" -o rw,hard,noatime,_netdev "$uri" "$mountpoint" || exit 1
+    sudo_noninteractive mount -t "$fstype" -o rw,hard,noatime,nosuid,nodev,noexec,proto=tcp,_netdev "$uri" "$mountpoint" || exit 1
   fi
 }
 
