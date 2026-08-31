@@ -40,18 +40,15 @@ exit 1
 SH
 chmod +x "$_FAKE_PACMAN_DIR/pacman"
 
-_ORIG_PATH="$PATH"
-export PATH="$_FAKE_PACMAN_DIR:$PATH"
-
 die() { echo "DIE: $*" >&2; exit 1; }
 
+export OMACLONE_PACMAN="$_FAKE_PACMAN_DIR/pacman"
 if ! (deps_ensure_pacman nonexistent-fake-pkg >/dev/null 2>&1); then
   :
 else
   fail "deps_ensure_pacman should fail with fake pacman"
 fi
-
-export PATH="$_ORIG_PATH"
+unset OMACLONE_PACMAN
 rm -rf "$_FAKE_PACMAN_DIR"
 
 echo "PASS: fake-pacman path for missing cmd"

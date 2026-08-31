@@ -6,7 +6,7 @@ const assert = require("assert");
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8");
 const ctx = { console };
 vm.createContext(ctx);
-vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectedLabels, locationCloneText };", ctx);
+vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectedLabels, locationCloneText, retentionPresets, retentionLabel, retentionShort };", ctx);
 const M = ctx.Model;
 
 function fixture(overrides) {
@@ -90,5 +90,30 @@ assert.strictEqual(M.locationCloneText({ snapshotCount: 3, connected: true }), "
 assert.strictEqual(M.locationCloneText({ snapshotCount: 1, connected: true }), "1 clone");
 assert.strictEqual(M.locationCloneText({ snapshotCount: 3, connected: false }), "");
 assert.strictEqual(M.locationCloneText({}), "");
+assert.strictEqual(M.locationCloneText({ snapshotCount: 0, connected: true }), "0 clones");
+
+assert.strictEqual(M.storageKind({ backend: "disk" }), "USB");
+assert.strictEqual(M.storageKind({ backend: "s3" }), "Cloud");
+assert.strictEqual(M.storageKind({ backend: "local" }), "Local");
+assert.strictEqual(M.storageKind({ backend: "nfs" }), "NAS");
+
+const broken = M.parseStatus("{not json");
+assert.strictEqual(broken.lastError, "Failed to parse backup status");
+assert.ok(Array.isArray(broken.locations));
+
+const arr = M.parseStatus("[]");
+assert.ok(arr.locations);
+assert.strictEqual(typeof arr.configured, "boolean");
+
+const presets = M.retentionPresets();
+assert.ok(Array.isArray(presets));
+assert.strictEqual(presets[0].id, "last-5");
+assert.strictEqual(M.retentionLabel("quarter"), "3 months");
+assert.strictEqual(M.retentionLabel("year"), "1 year");
+assert.strictEqual(M.retentionLabel("standard"), "7 days / 4 weeks / 6 months / 2 years");
+assert.strictEqual(M.retentionLabel("nope"), "7 days / 4 weeks / 6 months / 2 years");
+assert.strictEqual(M.retentionShort("last-5"), "5");
+assert.strictEqual(M.retentionShort("week"), "7d");
+assert.strictEqual(M.retentionShort("standard"), "1y+");
 
 console.log("OK");

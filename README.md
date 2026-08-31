@@ -329,6 +329,14 @@ Drop-in backends: `~/.config/omaclone/backends/<secrets|transport|notify>/<id>`.
 ## Development
 
 ```bash
+make test          # or: ./tests/run.sh
+```
+
+That runs the contract tests, a hermetic restic round-trip (`init` → `clone --cron` → `restore --snapshot` → `forget`), the `--cron` skip matrix, systemd unit checks, `node ./tests/test-model.js`, and `omarchy plugin validate .` when `omarchy` is on PATH.
+
+Individual files still work:
+
+```bash
 ./tests/test-backend-contract.sh
 ./tests/test-transport-contract.sh
 ./tests/test-migration.sh
@@ -342,11 +350,14 @@ Drop-in backends: `~/.config/omaclone/backends/<secrets|transport|notify>/<id>`.
 ./tests/test-secrets-retry.sh
 ./tests/test-keyring-store.sh
 ./tests/test-install.sh
+./tests/test-units.sh
+./tests/test-cron-skip.sh
+./tests/test-restic-roundtrip.sh
 node ./tests/test-model.js
 omarchy plugin validate .
 ```
 
-Do not run a live `omaclone restore` against a lived-in home unless you mean it.
+Do not run a live `omaclone restore` against a lived-in home unless you mean it. The round-trip test uses an isolated temp `$HOME`.
 
 ---
 

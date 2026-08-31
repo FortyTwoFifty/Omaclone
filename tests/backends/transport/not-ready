@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+
+id() { printf '%s\n' not-ready; }
+describe() { printf '%s\n' "Test transport that is never ready"; }
+available() { exit 0; }
+install() { return 0; }
+capabilities() { printf '%s\n' "mount"; }
+setup() { cfg_set transport.backend not-ready; }
+mount() { printf '%s\n' "not-ready: mount refused" >&2; exit 1; }
+unmount() { exit 0; }
+ready() { exit 1; }
+bootstrap-install() { exit 0; }
+
+dispatch_transport "${1:-}"

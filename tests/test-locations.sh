@@ -10,6 +10,7 @@ export NAS_BACKUP_USER_CONFIG_DIR
 export NAS_BACKUP_STATE_DIR="$NAS_BACKUP_USER_CONFIG_DIR/state"
 export NAS_BACKUP_CONFIG="$NAS_BACKUP_USER_CONFIG_DIR/config.toml"
 export OMACLONE_SKIP_SYSTEMD=1
+export OMACLONE_SKIP_DISCOVER=1
 unset NAS_BACKUP_LIB_LOADED OMACLONE_LOCATIONS_LOADED
 
 source "$ROOT/scripts/lib.sh"
@@ -117,10 +118,8 @@ loc_field=$(jq -r '.location' "$NAS_BACKUP_STATE_DIR/last-result.json")
 
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.usb.backend disk
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.backend nfs
-export OMACLONE_SKIP_DISCOVER=1
 json_skip=$(location_list_json)
 echo "$json_skip" | jq -e '.[] | select(.source=="discovered")' >/dev/null 2>&1 && fail "SKIP_DISCOVER: discovered entries should not appear"
-unset OMACLONE_SKIP_DISCOVER
 
 n_config=$(echo "$json_skip" | jq '[.[] | select(.source=="config")] | length')
 [[ "$n_config" -ge 2 ]] || fail "SKIP_DISCOVER: expected >=2 config entries, got $n_config"
@@ -129,6 +128,7 @@ kit=$(mktemp -d)
 trap 'rm -rf "$NAS_BACKUP_USER_CONFIG_DIR" "$kit"' EXIT
 mkdir -p "$kit/omaclone"
 touch "$kit/omaclone/restore" "$kit/omaclone/config.toml"
+unset OMACLONE_SKIP_DISCOVER
 export OMACLONE_DISCOVER_TARGETS="$kit"
 json_found=$(location_list_json)
 n_disc=$(echo "$json_found" | jq --arg mp "$kit/omaclone" '[.[] | select(.source=="discovered" and .mountpoint==$mp)] | length')
@@ -136,6 +136,7 @@ n_disc=$(echo "$json_found" | jq --arg mp "$kit/omaclone" '[.[] | select(.source
 disc_backend=$(echo "$json_found" | jq -r --arg mp "$kit/omaclone" '.[] | select(.source=="discovered" and .mountpoint==$mp) | .backend')
 [[ -n "$disc_backend" ]] || fail "discovered backend empty"
 unset OMACLONE_DISCOVER_TARGETS
+export OMACLONE_SKIP_DISCOVER=1
 
 err=$(mktemp)
 printf '%s\n' "Fatal: wrong password or no key found" >"$err"
@@ -283,6 +284,7 @@ exec /usr/bin/findmnt "$@"
 WRAPPER
 chmod +x "$FAKE_FINDMNT"
 
+unset OMACLONE_SKIP_DISCOVER
 export OMACLONE_DISCOVER_TARGETS="$kit"
 export PATH="$FAKE_FINDMNT_DIR:$PATH"
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.ids "usb,nas,dedup-disk"
@@ -296,6 +298,7 @@ kit_as_loc=$(echo "$json" | jq --arg mp "$kit" '[.[] | select(.mountpoint==$mp)]
 [[ "$kit_as_loc" == 0 ]] || fail "dedup uuid: kit should not be a second location, got $kit_as_loc"
 
 unset OMACLONE_DISCOVER_TARGETS
+export OMACLONE_SKIP_DISCOVER=1
 export PATH="${PATH#"$FAKE_FINDMNT_DIR":}"
 rm -rf "$FAKE_FINDMNT_DIR"
 
@@ -303,14 +306,15 @@ kit2=$(mktemp -d)
 mkdir -p "$kit2/omaclone"
 touch "$kit2/omaclone/restore" "$kit2/omaclone/config.toml"
 ln -s "$kit2" "${kit2}-link"
+unset OMACLONE_SKIP_DISCOVER
 export OMACLONE_DISCOVER_TARGETS="$kit2
 ${kit2}-link"
 json2=$(location_list_json)
 n_kit_disc=$(echo "$json2" | jq '[.[] | select(.source=="discovered")] | length')
 [[ "$n_kit_disc" == 1 ]] || fail "dedup kit+symlink: expected 1 discovered, got $n_kit_disc (json: $json2)"
 unset OMACLONE_DISCOVER_TARGETS
-
 export OMACLONE_SKIP_DISCOVER=1
+
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.ids "nas,usb,usb-2"
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.active nas
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.backend nfs
@@ -374,6 +378,7 @@ n_disc=$(echo "$json" | jq '[.[] | select(.source=="discovered")] | length')
 n_usb=$(echo "$json" | jq '[.[] | select(.id=="usb")] | length')
 [[ "$n_usb" == 1 ]] || fail "config usb missing after nested kit: $json"
 unset OMACLONE_DISCOVER_TARGETS
+export OMACLONE_SKIP_DISCOVER=1
 
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.usb.backend disk
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.usb.uuid "NO-SUCH-UUID"
@@ -428,9 +433,7 @@ migrate_locations
 ids2=$(config_get locations.ids)
 [[ -z "$ids2" ]] || fail "A: migrate_locations recreated ids: $ids2"
 
-export OMACLONE_SKIP_DISCOVER=1
 got=$("$ROOT/scripts/omaclone" status --json)
-unset OMACLONE_SKIP_DISCOVER
 echo "$got" | jq -e '.locations' >/dev/null || fail "A: status --json missing locations array"
 n_nas=$(echo "$got" | jq '[.locations[] | select(.id=="nas-only")] | length')
 [[ "$n_nas" == 0 ]] || fail "A: status --json should not recreate nas, got $n_nas entries"
@@ -449,6 +452,7 @@ python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.usb.uuid "A
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.usb.repo "/mnt/omaclone2/omaclone/repo"
 
 location_drop nas
+unset OMACLONE_SKIP_DISCOVER
 export OMACLONE_DISCOVER_TARGETS="$kit"
 json=$(location_list_json)
 n_nas_cfg=$(echo "$json" | jq '[.[] | select(.id=="nas")] | length')
@@ -458,6 +462,7 @@ n_disc_kit=$(echo "$json" | jq --arg mp "$kit/omaclone" '[.[] | select(.source==
 n_usb=$(echo "$json" | jq '[.[] | select(.id=="usb")] | length')
 [[ "$n_usb" == 1 ]] || fail "B: usb should still appear, got $n_usb"
 unset OMACLONE_DISCOVER_TARGETS
+export OMACLONE_SKIP_DISCOVER=1
 
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.backend nfs
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.uri "10.10.0.5:/backup"
@@ -469,11 +474,13 @@ forgotten=$(config_get locations.forgotten)
 case "|${forgotten}|" in
   *"|${kit}|"*|*"|${kit}/omaclone|"*) fail "C: forgotten should be cleared for re-saved nas, got '$forgotten'" ;;
 esac
+unset OMACLONE_SKIP_DISCOVER
 export OMACLONE_DISCOVER_TARGETS="$kit"
 json2=$(location_list_json)
 n_nas_cfg2=$(echo "$json2" | jq '[.[] | select(.id=="nas" and .source=="config")] | length')
 [[ "$n_nas_cfg2" == 1 ]] || fail "C: nas should appear source:config after re-save, got $n_nas_cfg2"
 unset OMACLONE_DISCOVER_TARGETS
+export OMACLONE_SKIP_DISCOVER=1
 
 rm -rf "$kit_parent" "$snap_repo" "$empty_mp" "$kit"
 

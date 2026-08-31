@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+
+id() { printf '%s\n' pre-fail; }
+describe() { printf '%s\n' "Test transport whose pre-restic fails"; }
+available() { exit 0; }
+install() { return 0; }
+capabilities() { printf '%s\n' "mount"; }
+setup() { cfg_set transport.backend pre-fail; }
+mount() { exit 0; }
+unmount() { exit 0; }
+ready() { exit 0; }
+bootstrap-install() { exit 0; }
+pre_restic() { printf '%s\n' "pre-restic refused" >&2; exit 1; }
+
+dispatch_transport "${1:-}"
