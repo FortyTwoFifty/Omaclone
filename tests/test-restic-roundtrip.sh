@@ -62,7 +62,7 @@ rmdir "$HOME/.config/omaclone-app" 2>/dev/null || true
 
 # Same HOME as clone: restic stores absolute paths, and restore remaps $staging$HOME.
 # A small temp home is "fresh" so the TUI will not demand typing RESTORE.
-omaclone_cli restore --snapshot "$sid" >/tmp/omaclone-roundtrip-restore.$$ 2>&1 \
+omaclone_cli restore --snapshot "$sid" --blank-omarchy >/tmp/omaclone-roundtrip-restore.$$ 2>&1 \
   || { cat /tmp/omaclone-roundtrip-restore.$$; fail "restore --snapshot failed"; }
 rm -f /tmp/omaclone-roundtrip-restore.$$
 

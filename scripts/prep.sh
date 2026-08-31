@@ -13,8 +13,11 @@ export NAS_BACKUP_ROOT="$ROOT"
 source "$ROOT/scripts/lib.sh"
 
 STAGING="$NAS_BACKUP_STAGING"
+if [[ -L "$STAGING" ]]; then
+  echo "omaclone: refusing to write staging through a symlink: $STAGING" >&2
+  exit 1
+fi
 mkdir -p "$STAGING"
-chown -R "$TARGET_USER:" "$NAS_BACKUP_STATE_DIR" "$NAS_BACKUP_USER_CONFIG_DIR"
 
 umask 077
 _etc_tar_args=()
@@ -52,6 +55,7 @@ systemctl --user --machine="$TARGET_USER@.host" list-unit-files --state=enabled 
   2>/dev/null | awk '{print $1}' | grep -E '\.(service|timer)$' >"$STAGING/user-units-enabled.txt" || true
 
 cp -a "$ROOT/RESTORE.md" "$STAGING/RESTORE.md" 2>/dev/null || true
-chown -R "$TARGET_USER:" "$STAGING"
+# Own only files we just wrote. Never chown -R a user-mutable tree.
+find -P "$STAGING" -xdev \( -type f -o -type d \) -exec chown -h "$TARGET_USER:" {} + 2>/dev/null || true
 chmod -R u=rwX,go= "$STAGING"
 echo "prep wrote $STAGING"

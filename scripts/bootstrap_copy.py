@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import shutil
 import stat
 import sys
 from pathlib import Path
 
 SKIP_DIRS = {".git", "__pycache__", "tests"}
+HASH_PATHS = ("scripts/omaclone", "scripts/restore", "scripts/lib.sh")
 
 def copy_tree(src: Path, dest: Path) -> None:
     if dest.exists():
@@ -42,8 +44,23 @@ def main(argv: list[str]) -> int:
     readme = root / "RESTORE.md"
     if readme.is_file():
         shutil.copy2(readme, dest / "RESTORE.md")
+    lines = []
+    for rel in HASH_PATHS:
+        path = root / rel
+        if path.is_file():
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            lines.append(f"{digest}  {rel}")
+    (dest / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
     marker = dest / ".omaclone-bootstrap"
-    marker.write_text("omaclone\n", encoding="utf-8")
+    version = ""
+    manifest = root / "manifest.json"
+    if manifest.is_file():
+        text = manifest.read_text(encoding="utf-8")
+        for raw in text.splitlines():
+            if '"version"' in raw:
+                version = raw.split(":", 1)[-1].strip().strip('",')
+                break
+    marker.write_text(f"omaclone {version}\n", encoding="utf-8")
     print(f"bootstrap installed at {dest}", file=sys.stderr)
     return 0
 

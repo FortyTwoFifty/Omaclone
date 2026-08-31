@@ -18,6 +18,7 @@ tests=(
   tests/test-keyring-store.sh
   tests/test-install.sh
   tests/test-setup.sh
+  tests/test-restore-safety.sh
   tests/test-units.sh
   tests/test-cron-skip.sh
   tests/test-restic-roundtrip.sh

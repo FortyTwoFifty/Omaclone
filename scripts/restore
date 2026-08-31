@@ -5,15 +5,57 @@ set +x +v
 set -euo pipefail
 
 here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+plugin="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/omaclone.plugin"
 
-if [[ -x "$here/omaclone/scripts/omaclone" ]]; then
+if [[ -x "$plugin/scripts/omaclone" ]]; then
+  ROOT="$plugin"
+elif [[ -x "$here/omaclone/scripts/omaclone" ]]; then
   ROOT="$here/omaclone"
 elif [[ -x "$here/scripts/omaclone" ]]; then
   ROOT="$here"
 else
   echo "omaclone: could not find the tool tree next to $0" >&2
-  echo "Expected $here/omaclone/scripts/omaclone" >&2
+  echo "Expected $here/omaclone/scripts/omaclone or $plugin/scripts/omaclone" >&2
   exit 1
+fi
+
+_kit_hash_ok() {
+  local sums="$here/SHA256SUMS"
+  [[ -f "$sums" ]] || return 0
+  python3 - "$sums" "$ROOT" <<'PY'
+import hashlib, sys
+from pathlib import Path
+sums, root = Path(sys.argv[1]), Path(sys.argv[2])
+for line in sums.read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    parts = line.split()
+    if len(parts) < 2:
+        continue
+    want, rel = parts[0], parts[-1]
+    path = root / rel
+    if not path.is_file():
+        sys.exit(1)
+    got = hashlib.sha256(path.read_bytes()).hexdigest()
+    if got != want:
+        sys.exit(1)
+sys.exit(0)
+PY
+}
+
+if [[ "$ROOT" != "$plugin" && "${OMACLONE_ALLOW_UNTRUSTED_KIT:-}" != 1 ]]; then
+  if ! _kit_hash_ok; then
+    echo "omaclone: kit scripts do not match SHA256SUMS (the USB/NAS copy may have been changed)." >&2
+    if [[ -t 0 ]]; then
+      printf 'Type UNTRUSTED to run this copy anyway: '
+      read -r phrase
+      [[ "$phrase" == UNTRUSTED ]] || exit 1
+    else
+      echo "Set OMACLONE_ALLOW_UNTRUSTED_KIT=1 to override, or install the plugin from git." >&2
+      exit 1
+    fi
+  fi
 fi
 
 if [[ -f "$here/config.toml" ]]; then

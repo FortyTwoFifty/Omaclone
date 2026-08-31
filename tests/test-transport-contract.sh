@@ -39,6 +39,11 @@ python3 "$ROOT/scripts/bootstrap_copy.py" "$ROOT" "$dest" "$NAS_BACKUP_CONFIG"
 [[ -x "$dest/restore" ]] || fail "restore not executable"
 [[ -d "$dest/omaclone" ]] || fail "missing omaclone tool tree"
 [[ ! -d "$dest/omaclone/tests" ]] || fail "tests/ should not be copied"
+[[ -f "$dest/SHA256SUMS" ]] || fail "missing SHA256SUMS"
+grep -q 'scripts/omaclone' "$dest/SHA256SUMS" || fail "SHA256SUMS missing scripts/omaclone"
+got=$(awk '$2=="scripts/omaclone"{print $1}' "$dest/SHA256SUMS")
+want=$(sha256sum "$ROOT/scripts/omaclone" | awk '{print $1}')
+[[ "$got" == "$want" ]] || fail "SHA256SUMS omaclone hash mismatch"
 rm -rf "$dest"
 
 echo "OK"

@@ -1107,11 +1107,11 @@ etc_rel_ok() {
   esac
   local base="${rel%%/*}"
   case "$base" in
-    fstab|crypttab|hostname|hosts|shadow|gshadow|machine-id|mkinitcpio.conf|cryptsetup-keys.d)
+    fstab|crypttab|hostname|hosts|passwd|group|shadow|gshadow|machine-id|mkinitcpio.conf|cryptsetup-keys.d|systemd|pam.d|polkit-1|cron|cron.d|cron.daily|ssl|ssh)
       return 1 ;;
   esac
   case "$rel" in
-    *limine*|*grub*|NetworkManager/*|ssh/ssh_host_*|sudoers|sudoers.d/*)
+    *limine*|*grub*|NetworkManager/*|ssh/*|sudoers|sudoers.d/*|systemd/*|pam.d/*|polkit-1/*|cron.d/*|ssl/*)
       return 1 ;;
   esac
   return 0
