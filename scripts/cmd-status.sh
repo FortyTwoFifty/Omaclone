@@ -283,13 +283,24 @@ cmd_status() {
 
 cmd_location() {
   migrate_locations
+  local want_json=0
+  local args=()
+  local a
+  for a in "$@"; do
+    if [[ "$a" == --json ]]; then
+      want_json=1
+    else
+      args+=("$a")
+    fi
+  done
+  set -- "${args[@]}"
   local sub="${1:-list}"
   shift || true
   case "$sub" in
     list|"")
       local json
       json=$(location_list_json)
-      if [[ "${1:-}" == --json ]]; then
+      if (( want_json )) || [[ "${1:-}" == --json ]]; then
         printf '%s\n' "$json"
         return 0
       fi
@@ -408,7 +419,7 @@ cmd_location() {
       log "location '$target' automatic clones: $val"
       ;;
     *)
-      die "usage: omaclone location [list|add|switch ID|remove ID|schedule [ID] on|off] [--yes]"
+      die "usage: omaclone location [list|add|switch ID|remove ID|schedule [ID] on|off] [--json] [--yes]"
       ;;
   esac
 }
@@ -496,6 +507,11 @@ cmd_install() {
       omarchy-shell shell rescanPlugins 2>/dev/null || true
     fi
   fi
+  if [[ "${OMACLONE_SKIP_SYSTEMD:-}" != 1 && "$(config_get transport.backend)" == nfs ]]; then
+    source "$ROOT/scripts/nfs-lib.sh"
+    nfs_upgrade_existing_units "$(config_get transport.uri)" "$(config_get transport.mountpoint)" || true
+    nfs_remount_hardening "$(config_get transport.mountpoint)"
+  fi
   log "installed: ~/.local/bin/omaclone and plugin $PLUGIN_ID"
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
@@ -565,18 +581,35 @@ cmd_doctor() {
     echo "setup: unfinished — run: omaclone setup"
   fi
 
-  local mp repo backend
+  local mp repo backend opts plugin_dest pv rv
   mp=$(config_get transport.mountpoint)
   repo=$(config_get restic.repo)
   backend=$(config_get transport.backend)
-  if [[ -n "$mp" ]] && findmnt -n "$mp" >/dev/null 2>&1; then
-    echo "mounted: $(findmnt -n -o SOURCE,FSTYPE "$mp")"
+  if [[ "$backend" == nfs && -n "$mp" ]]; then
+    if findmnt -n -t nfs,nfs4 "$mp" >/dev/null 2>&1; then
+      echo "mounted: $(findmnt -n -t nfs,nfs4 -o SOURCE,FSTYPE "$mp" | awk 'NR==1 { print; exit }')"
+      opts=$(findmnt -n -t nfs,nfs4 -o OPTIONS "$mp" | awk 'NR==1 { print; exit }')
+      echo "options: $opts"
+      if [[ "$opts" != *nosuid* || "$opts" != *nodev* || "$opts" != *noexec* ]]; then
+        echo "mount flags: missing nosuid,nodev,noexec — run: omaclone install"
+      fi
+      echo "dir: $(stat -c 'uid=%u gid=%g mode=%A' "$mp" 2>/dev/null || echo missing)"
+      if dir_is_writable "$mp"; then
+        echo "writable: yes"
+      else
+        echo "writable: NO"
+        explain_nfs_uid_mismatch "$mp"
+      fi
+    else
+      echo "mounted: no"
+    fi
+  elif [[ -n "$mp" ]] && findmnt -n "$mp" >/dev/null 2>&1; then
+    echo "mounted: $(findmnt -n -o SOURCE,FSTYPE "$mp" | awk 'NR==1 { print; exit }')"
     echo "dir: $(stat -c 'uid=%u gid=%g mode=%A' "$mp" 2>/dev/null || echo missing)"
     if dir_is_writable "$mp"; then
       echo "writable: yes"
     else
       echo "writable: NO"
-      [[ "$backend" == nfs ]] && explain_nfs_uid_mismatch "$mp"
     fi
   elif [[ "$backend" == s3 || "$backend" == sftp ]]; then
     echo "mounted: n/a (remote transport)"
@@ -594,5 +627,14 @@ cmd_doctor() {
     echo "restic config: present at $repo"
   else
     echo "restic config: absent at $repo"
+  fi
+  plugin_dest=$(omaclone_plugin_dest)
+  if [[ -f "$plugin_dest/manifest.json" && -f "$ROOT/manifest.json" ]]; then
+    pv=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$plugin_dest/manifest.json" 2>/dev/null || true)
+    rv=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$ROOT/manifest.json" 2>/dev/null || true)
+    if [[ -n "$pv" && -n "$rv" && "$pv" != "$rv" ]]; then
+      echo "plugin copy at $plugin_dest is $pv; this tree is $rv"
+      echo "the daily timer uses ~/.local/bin/omaclone — run: omaclone install"
+    fi
   fi
 }

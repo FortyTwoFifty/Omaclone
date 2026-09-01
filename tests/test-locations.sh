@@ -484,4 +484,50 @@ export OMACLONE_SKIP_DISCOVER=1
 
 rm -rf "$kit_parent" "$snap_repo" "$empty_mp" "$kit"
 
+[[ "$(location_default_label s3)" == "Cloud (S3)" ]] || fail "s3 default label: $(location_default_label s3)"
+[[ "$(location_default_schedule s3)" == on ]] || fail "s3 default schedule should be on"
+
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.ids ""
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.active ""
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.migrated ""
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.backend s3
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set destination.profile cloud
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.endpoint "example.r2.cloudflarestorage.com"
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.bucket mybucket
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.prefix omaclone
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.region auto
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.tls 1
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set restic.repo "s3:https://example.r2.cloudflarestorage.com/mybucket/omaclone"
+migrate_locations
+[[ "$(config_get locations.active)" == cloud ]] || fail "s3 migrate active: $(config_get locations.active)"
+ids=$(config_get locations.ids)
+printf '%s\n' "$ids" | grep -q cloud || fail "s3 migrate ids missing cloud: $ids"
+[[ "$(location_get cloud backend)" == s3 ]] || fail "s3 migrate backend"
+[[ "$(location_get cloud endpoint)" == "example.r2.cloudflarestorage.com" ]] || fail "s3 migrate endpoint"
+[[ "$(location_get cloud bucket)" == mybucket ]] || fail "s3 migrate bucket"
+[[ "$(location_get cloud prefix)" == omaclone ]] || fail "s3 migrate prefix"
+[[ "$(location_get cloud region)" == auto ]] || fail "s3 migrate region"
+[[ "$(location_get cloud tls)" == 1 ]] || fail "s3 migrate tls"
+[[ "$(location_get cloud schedule)" == on ]] || fail "s3 migrate schedule"
+
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.backend local
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set restic.repo "$NAS_BACKUP_USER_CONFIG_DIR/local-repo"
+mkdir -p "$NAS_BACKUP_USER_CONFIG_DIR/local-repo"
+location_save_current local "Local" on
+location_activate local
+[[ "$(config_get transport.backend)" == local ]] || fail "switch to local"
+location_activate cloud
+[[ "$(config_get transport.backend)" == s3 ]] || fail "switch back to s3"
+[[ "$(config_get transport.endpoint)" == "example.r2.cloudflarestorage.com" ]] || fail "apply endpoint"
+[[ "$(config_get transport.bucket)" == mybucket ]] || fail "apply bucket"
+[[ "$(config_get transport.prefix)" == omaclone ]] || fail "apply prefix"
+[[ "$(config_get transport.region)" == auto ]] || fail "apply region"
+[[ "$(config_get transport.tls)" == 1 ]] || fail "apply tls"
+[[ "$(config_get restic.repo)" == "s3:https://example.r2.cloudflarestorage.com/mybucket/omaclone" ]] \
+  || fail "apply repo: $(config_get restic.repo)"
+
+json=$(location_list_json)
+echo "$json" | jq -e '.[] | select(.id=="cloud" and .backend=="s3" and .connected==true)' >/dev/null \
+  || fail "s3 location_list_json connected: $json"
+
 echo "OK"

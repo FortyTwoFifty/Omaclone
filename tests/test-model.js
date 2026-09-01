@@ -98,6 +98,24 @@ assert.strictEqual(M.storageKind({ backend: "disk", label: "USB stick" }), "USB"
 assert.strictEqual(M.storageKind({ backend: "s3" }), "Cloud");
 assert.strictEqual(M.storageKind({ backend: "local" }), "Local");
 assert.strictEqual(M.storageKind({ backend: "nfs" }), "NAS");
+assert.strictEqual(M.storageKind({ backend: "cifs" }), "NAS");
+assert.strictEqual(M.storageKind({ backend: "sftp" }), "NAS");
+
+const nasOffline = { id: "nas", label: "NAS", backend: "nfs", connected: false, source: "config" };
+assert.strictEqual(M.paneLocations([nasOffline]).length, 1, "offline NAS must stay in the pane");
+const diskOffline = { id: "usb", label: "USB", backend: "disk", connected: false, source: "config" };
+assert.strictEqual(M.paneLocations([diskOffline]).length, 0, "offline disk must hide");
+
+const cloud = { id: "cloud", label: "R2", backend: "s3", connected: true, source: "config" };
+assert.strictEqual(M.storageKind(cloud), "Cloud");
+assert.strictEqual(M.storageDisplay(cloud), "R2");
+assert.match(M.storageHint(cloud, { repoSizeText: "1 GB" }), /Cloud/);
+assert.match(M.storageHint(cloud, { repoSizeText: "1 GB" }), /connected/i);
+assert.strictEqual(M.paneLocations([cloud]).length, 1);
+const cloudBare = { id: "cloud", backend: "s3", source: "config" };
+assert.strictEqual(M.paneLocations([cloudBare]).length, 1, "s3 must stay in the pane without a mount");
+const cloudOff = { id: "cloud", backend: "s3", connected: false, source: "config" };
+assert.strictEqual(M.paneLocations([cloudOff]).length, 1, "s3 is not filtered like an unplugged disk");
 
 const broken = M.parseStatus("{not json");
 assert.strictEqual(broken.lastError, "Failed to parse backup status");

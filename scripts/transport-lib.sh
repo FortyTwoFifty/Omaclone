@@ -19,6 +19,29 @@ sudo_noninteractive() {
   fi
 }
 
+mount_wake() {
+  local mp="${1:-}"
+  [[ -n "$mp" ]] || return 0
+  if have_cmd timeout; then
+    timeout 8 stat "$mp" >/dev/null 2>&1 || true
+  else
+    stat "$mp" >/dev/null 2>&1 || true
+  fi
+}
+
+# Exact mountpoint, skipping autofs rows so idle automount is not "ready".
+mount_fstype_live() {
+  local mp="${1:-}"
+  [[ -n "$mp" ]] || return 1
+  findmnt -n -o FSTYPE "$mp" 2>/dev/null | awk '$1 != "" && $1 != "autofs" { print; exit }'
+}
+
+mount_is_type() {
+  local mp="${1:-}" types="${2:-}"
+  [[ -n "$mp" && -n "$types" ]] || return 1
+  findmnt -n -t "$types" "$mp" >/dev/null 2>&1
+}
+
 gum_input() {
   local placeholder="$1"
   local value="${2:-}"

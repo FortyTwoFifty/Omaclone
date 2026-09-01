@@ -5,6 +5,11 @@ OMACLONE_NFS_LIB_LOADED=1
 
 set +x +v
 
+if ! declare -F sudo_noninteractive >/dev/null 2>&1; then
+  # shellcheck source=/dev/null
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/transport-lib.sh"
+fi
+
 NFS_HOST=""
 NFS_EXPORT=""
 
@@ -14,6 +19,83 @@ nfs_fstype() {
   else
     printf '%s\n' nfs
   fi
+}
+
+nfs_mount_options() {
+  printf '%s\n' "rw,hard,nconnect=8,noatime,nosuid,nodev,noexec,proto=tcp,_netdev"
+}
+
+nfs_mount_options_fallback() {
+  printf '%s\n' "rw,hard,noatime,nosuid,nodev,noexec,proto=tcp,_netdev"
+}
+
+nfs_share_is_live() {
+  local mp="${1:-}"
+  [[ -n "$mp" ]] || return 1
+  mount_wake "$mp"
+  mount_is_type "$mp" "nfs,nfs4"
+}
+
+nfs_remount_hardening() {
+  local mp="${1:-}" opts
+  [[ -n "$mp" ]] || return 0
+  opts=$(findmnt -n -t nfs,nfs4 -o OPTIONS "$mp" 2>/dev/null | awk 'NR==1 { print; exit }')
+  [[ -n "$opts" ]] || return 0
+  [[ "$opts" == *nosuid* && "$opts" == *nodev* && "$opts" == *noexec* ]] && return 0
+  sudo_noninteractive mount -o remount,nosuid,nodev,noexec "$mp" 2>/dev/null || true
+}
+
+nfs_write_unit_files() {
+  local uri="$1" mountpoint="$2" dest="$3"
+  nfs_unit_names "$mountpoint"
+  cat >"$dest/$NFS_MOUNT_UNIT" <<EOF
+[Unit]
+Description=Omaclone NFS share
+After=network-online.target
+Wants=network-online.target
+
+[Mount]
+What=$uri
+Where=$mountpoint
+Type=$(nfs_fstype)
+Options=$(nfs_mount_options)
+EOF
+  cat >"$dest/$NFS_AUTO_UNIT" <<EOF
+[Unit]
+Description=Automount Omaclone NFS share
+
+[Automount]
+Where=$mountpoint
+TimeoutIdleSec=600
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+nfs_upgrade_existing_units() {
+  local uri="${1:-}" mountpoint="${2:-}"
+  local unit_dir="${3:-/etc/systemd/system}"
+  local have want tmp
+  [[ -n "$uri" && -n "$mountpoint" ]] || return 0
+  nfs_validate_uri "$uri" || return 1
+  nfs_validate_mountpoint "$mountpoint" || return 1
+  mountpoint="${mountpoint%/}"
+  nfs_unit_names "$mountpoint"
+  [[ -f "$unit_dir/$NFS_MOUNT_UNIT" ]] || return 0
+  have=$(awk -F= '/^Options=/ { print $2; exit }' "$unit_dir/$NFS_MOUNT_UNIT")
+  want=$(nfs_mount_options)
+  [[ "$have" == "$want" ]] && return 0
+  tmp=$(mktemp -d)
+  nfs_write_unit_files "$uri" "$mountpoint" "$tmp"
+  sudo_noninteractive cp "$tmp/$NFS_MOUNT_UNIT" "$tmp/$NFS_AUTO_UNIT" "$unit_dir/" || {
+    rm -rf "$tmp"
+    return 1
+  }
+  rm -rf "$tmp"
+  sudo_noninteractive systemctl daemon-reload >/dev/null 2>&1 || true
+  nfs_remount_hardening "$mountpoint"
+  printf '%s\n' "updated $NFS_MOUNT_UNIT options" >&2
 }
 
 nfs_trim() {
@@ -323,31 +405,7 @@ nfs_install_automount() {
   auto_name="$NFS_AUTO_UNIT"
 
   tmp=$(mktemp -d)
-  cat >"$tmp/$unit_name" <<EOF
-[Unit]
-Description=Omaclone NFS share
-After=network-online.target
-Wants=network-online.target
-
-[Mount]
-What=$uri
-Where=$mountpoint
-Type=$(nfs_fstype)
-Options=rw,hard,noatime,nosuid,nodev,noexec,proto=tcp,_netdev
-EOF
-
-  cat >"$tmp/$auto_name" <<EOF
-[Unit]
-Description=Automount Omaclone NFS share
-
-[Automount]
-Where=$mountpoint
-TimeoutIdleSec=600
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
+  nfs_write_unit_files "$uri" "$mountpoint" "$tmp"
   sudo mkdir -p "$mountpoint"
   sudo cp "$tmp/$unit_name" "$tmp/$auto_name" "$unit_dir/"
   rm -rf "$tmp"
@@ -365,8 +423,8 @@ EOF
     return 1
   fi
 
-  if ! findmnt -n "$mountpoint" >/dev/null 2>&1; then
-    printf '%s\n' "automount enabled but $mountpoint is not mounted" >&2
+  if ! nfs_share_is_live "$mountpoint"; then
+    printf '%s\n' "automount enabled but $mountpoint is not mounted as NFS" >&2
     nfs_rollback_units "$mountpoint" "$unit_dir"
     return 1
   fi

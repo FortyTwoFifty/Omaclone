@@ -42,16 +42,9 @@ cmd_backup() {
 
   if [[ "${OMACLONE_SKIP_PREP:-}" == 1 ]]; then
     log "prep skipped (OMACLONE_SKIP_PREP)"
-  elif (( cron )); then
-    if sudo -n true >/dev/null 2>&1; then
-      log "running prep (sudo)…"
-      sudo -n "$ROOT/scripts/prep.sh" || log "cron: prep failed; cloning \$HOME only"
-    else
-      log "cron: skipping prep (sudo needs a password); cloning \$HOME only"
-    fi
   else
-    log "running prep (sudo)…"
-    if ! sudo "$ROOT/scripts/prep.sh"; then
+    log "running prep…"
+    if ! "$ROOT/scripts/prep.sh"; then
       log "prep skipped; cloning \$HOME only"
     fi
   fi
@@ -74,15 +67,25 @@ cmd_backup() {
   fi
   transport_prepare_env
   local exclude="$ROOT/config/excludes.txt"
-  local host
+  local host extra_ex=() repo rel kit
   host=$(hostname)
-  log "backing up $HOME → $(restic_repo)"
+  repo=$(restic_repo)
+  if [[ "$repo" == "$HOME"/* ]]; then
+    rel="${repo#"$HOME"/}"
+    extra_ex+=(--exclude "$rel")
+    kit=$(dirname "$rel")
+    if [[ "$kit" != "." && "$kit" != "$rel" ]]; then
+      extra_ex+=(--exclude "$kit")
+    fi
+  fi
+  log "backing up $HOME → $repo"
   local errfile rc=0
   errfile=$(mktemp -p "$(_password_tmpdir)" omaclone.restic.XXXXXX)
   set +e
   restic_exec backup "$HOME" \
     --one-file-system \
     --exclude-file="$exclude" \
+    "${extra_ex[@]}" \
     --tag identity \
     --tag omaclone \
     --tag nas-backup \
@@ -251,7 +254,7 @@ cmd_copy() {
   fi
   location_has "$dest_id" || die "unknown location: $dest_id"
   [[ "$dest_id" != "$src_id" ]] || die "already on location '$dest_id'"
-  location_connected "$dest_id" || die "location '$dest_id' is not connected"
+  location_prepare_mount "$dest_id" || die "location '$dest_id' is not connected"
   local dest_backend dest_repo src_repo
   dest_backend=$(location_get "$dest_id" backend)
   dest_repo=$(location_get "$dest_id" repo)

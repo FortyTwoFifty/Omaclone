@@ -11,19 +11,33 @@ capabilities() { printf '%s\n' "remote"; }
 credential_keys() { printf '%s\n' "s3-access-key" "s3-secret-key"; }
 
 _restic_url() {
-  local endpoint bucket prefix
+  local endpoint bucket prefix tls scheme
   endpoint=$(cfg transport.endpoint)
   bucket=$(cfg transport.bucket)
   prefix=$(cfg transport.prefix omaclone)
+  tls=$(cfg transport.tls 1)
   endpoint="${endpoint#https://}"
   endpoint="${endpoint#http://}"
   endpoint="${endpoint%/}"
   prefix="${prefix#/}"
   prefix="${prefix%/}"
   if [[ "$endpoint" == s3.amazonaws.com || "$endpoint" == s3.*.amazonaws.com ]]; then
-    printf 's3:%s/%s/%s\n' "$endpoint" "$bucket" "$prefix"
+    if [[ -n "$prefix" ]]; then
+      printf 's3:%s/%s/%s\n' "$endpoint" "$bucket" "$prefix"
+    else
+      printf 's3:%s/%s\n' "$endpoint" "$bucket"
+    fi
   else
-    printf 's3:https://%s/%s/%s\n' "$endpoint" "$bucket" "$prefix"
+    if [[ "$tls" == 0 ]]; then
+      scheme=http
+    else
+      scheme=https
+    fi
+    if [[ -n "$prefix" ]]; then
+      printf 's3:%s://%s/%s/%s\n' "$scheme" "$endpoint" "$bucket" "$prefix"
+    else
+      printf 's3:%s://%s/%s\n' "$scheme" "$endpoint" "$bucket"
+    fi
   fi
 }
 
@@ -63,6 +77,10 @@ setup() {
   fi
 
   endpoint=$(_preset_endpoint "$preset")
+  local tls=1
+  if [[ "$preset" == minio ]]; then
+    tls=0
+  fi
   if [[ "$preset" == r2 ]]; then
     local account
     account=$(gum_input "Cloudflare account id (or paste the full R2 endpoint)" "")
@@ -73,6 +91,11 @@ setup() {
     fi
   elif [[ -z "$endpoint" || "$preset" == minio || "$preset" == b2 ]]; then
     endpoint=$(gum_input "S3 endpoint host (no https://)" "$endpoint")
+  fi
+  if [[ "$endpoint" == http://* ]]; then
+    tls=0
+  elif [[ "$endpoint" == https://* ]]; then
+    tls=1
   fi
   bucket=$(cfg transport.bucket "")
   bucket=$(gum_input "Bucket name" "$bucket")
@@ -90,6 +113,7 @@ setup() {
   cfg_set transport.bucket "$bucket"
   cfg_set transport.prefix "$prefix"
   cfg_set transport.region "$region"
+  cfg_set transport.tls "$tls"
   cfg_set restic.repo "$(_restic_url)"
 
   echo "Store S3 access keys in the keyring (not in config)." >&2
@@ -110,8 +134,8 @@ ready() {
 }
 
 pre_restic() {
-  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
   local envf="${NAS_BACKUP_ENVFILE:-}"
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
   [[ -n "$envf" ]] || return 0
   local id secret region
   id=$(transport_secret_get s3-access-key) || return 1

@@ -26,12 +26,53 @@ ensure_cifs_utils() {
   sudo pacman -S --needed --noconfirm cifs-utils
 }
 
+_cifs_shred_cred() {
+  local f="${1:-}"
+  [[ -n "$f" && -e "$f" ]] || return 0
+  if command -v shred >/dev/null 2>&1; then
+    shred -u "$f" 2>/dev/null || rm -f "$f"
+  else
+    : >"$f"
+    rm -f "$f"
+  fi
+}
+
+_cifs_write_cred() {
+  local user="$1" cred="$2"
+  {
+    printf 'username=%s\n' "$user"
+    printf 'password='
+    transport_secret_get smb-password
+    printf '\n'
+  } >"$cred"
+  chmod 600 "$cred"
+}
+
+_cifs_probe() {
+  local uri="$1" user="$2"
+  local tmp cred rc=0
+  tmp=$(mktemp -d /tmp/omaclone-cifs-probe.XXXXXX)
+  cred=$(_smb_cred_file) || { rmdir "$tmp" 2>/dev/null || true; return 1; }
+  _cifs_write_cred "$user" "$cred" || { _cifs_shred_cred "$cred"; rmdir "$tmp"; return 1; }
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 15 sudo_noninteractive mount -t cifs "$uri" "$tmp" \
+      -o "credentials=${cred},ro,vers=3.0,nosuid,nodev,noexec,_netdev" || rc=$?
+  else
+    sudo_noninteractive mount -t cifs "$uri" "$tmp" \
+      -o "credentials=${cred},ro,vers=3.0,nosuid,nodev,noexec,_netdev" || rc=$?
+  fi
+  sudo_noninteractive umount -l "$tmp" 2>/dev/null || true
+  _cifs_shred_cred "$cred"
+  rmdir "$tmp" 2>/dev/null || true
+  return "$rc"
+}
+
 _smb_cred_file() {
   local dir
   if [[ -d /dev/shm && -w /dev/shm ]]; then
     dir=/dev/shm
-  elif [[ -d /run/user/${UID:-$(id -u)} && -w /run/user/${UID:-$(id -u)} ]]; then
-    dir="/run/user/${UID:-$(id -u)}"
+  elif [[ -d /run/user/${UID:-$(command id -u)} && -w /run/user/${UID:-$(command id -u)} ]]; then
+    dir="/run/user/${UID:-$(command id -u)}"
   else
     printf '%s\n' "no tmpfs directory for SMB credentials" >&2
     return 1
@@ -66,6 +107,12 @@ setup() {
     transport_secret_prompt_and_store smb-password "SMB password for $user" || exit 1
   fi
 
+  printf '%s\n' "Checking that $uri is reachable before saving this location…" >&2
+  if ! _cifs_probe "$uri" "$user"; then
+    printf '%s\n' "SMB share is not available (wrong UNC, user, or password)." >&2
+    exit 1
+  fi
+
   cfg_set transport.backend cifs
   cfg_set transport.uri "$uri"
   cfg_set transport.mountpoint "$mountpoint"
@@ -81,32 +128,16 @@ mount() {
   uri=$(cfg transport.uri)
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
   user=$(cfg transport.username "$USER")
-  if findmnt -n "$mountpoint" >/dev/null 2>&1; then
+  if mount_is_type "$mountpoint" cifs; then
     exit 0
   fi
   sudo_noninteractive mkdir -p "$mountpoint" || exit 1
   cred=$(_smb_cred_file)
-  _cifs_shred_cred() {
-    local f="${1:-}"
-    [[ -n "$f" && -e "$f" ]] || return 0
-    if command -v shred >/dev/null 2>&1; then
-      shred -u "$f" 2>/dev/null || rm -f "$f"
-    else
-      : >"$f"
-      rm -f "$f"
-    fi
-  }
   trap '_cifs_shred_cred "'"$cred"'"' EXIT INT TERM HUP
-  {
-    printf 'username=%s\n' "$user"
-    printf 'password='
-    transport_secret_get smb-password
-    printf '\n'
-  } >"$cred"
-  chmod 600 "$cred"
+  _cifs_write_cred "$user" "$cred"
   local rc=0
   sudo_noninteractive mount -t cifs "$uri" "$mountpoint" \
-    -o "credentials=${cred},uid=$(id -u),gid=$(id -g),file_mode=0600,dir_mode=0700,vers=3.0,nosuid,nodev,noexec,_netdev" \
+    -o "credentials=${cred},uid=$(command id -u),gid=$(command id -g),file_mode=0600,dir_mode=0700,vers=3.0,nosuid,nodev,noexec,_netdev" \
     || rc=$?
   _cifs_shred_cred "$cred"
   trap - EXIT INT TERM HUP
@@ -116,16 +147,16 @@ mount() {
 unmount() {
   local mountpoint
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
-  sudo umount "$mountpoint" 2>/dev/null || true
+  sudo_noninteractive umount "$mountpoint" 2>/dev/null || true
 }
 
 ready() {
   local mountpoint repo
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
   repo=$(cfg restic.repo)
-  stat "$mountpoint" >/dev/null 2>&1 || true
-  findmnt -n "$mountpoint" >/dev/null 2>&1 || return 1
-  [[ -n "$repo" ]]
+  [[ -n "$repo" ]] || return 1
+  mount_wake "$mountpoint"
+  mount_is_type "$mountpoint" cifs
 }
 
 bootstrap-install() {

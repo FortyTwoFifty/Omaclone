@@ -3,6 +3,7 @@ set +x +v
 set -euo pipefail
 
 source "$NAS_BACKUP_ROOT/scripts/transport-lib.sh"
+source "$NAS_BACKUP_ROOT/scripts/nfs-lib.sh"
 
 id() { printf '%s\n' nfs; }
 describe() { printf '%s\n' "NFS (Unix share: TrueNAS, Synology, Unraid, …)"; }
@@ -36,7 +37,6 @@ _nfs_type() {
 setup() {
   ensure_nfs_utils
   source "$NAS_BACKUP_ROOT/scripts/lib.sh"
-  source "$NAS_BACKUP_ROOT/scripts/nfs-lib.sh"
 
   local uri mountpoint repo
   uri=$(cfg transport.uri "")
@@ -57,6 +57,8 @@ setup() {
 
     if nfs_already_mounted "$uri" "$mountpoint"; then
       printf '%s\n' "Already mounted: $uri at $mountpoint" >&2
+      nfs_upgrade_existing_units "$uri" "$mountpoint" || true
+      nfs_remount_hardening "$mountpoint"
       break
     fi
 
@@ -80,10 +82,12 @@ setup() {
     fi
   fi
 
-  if ! findmnt -n "$mountpoint" >/dev/null 2>&1; then
+  if ! nfs_share_is_live "$mountpoint"; then
     printf '%s\n' "NFS share did not mount at $mountpoint; not saving this location." >&2
     exit 1
   fi
+  nfs_upgrade_existing_units "$uri" "$mountpoint" || true
+  nfs_remount_hardening "$mountpoint"
 
   cfg_set transport.backend nfs
   cfg_set transport.uri "$uri"
@@ -103,7 +107,6 @@ setup() {
 
 mount() {
   ensure_nfs_utils
-  source "$NAS_BACKUP_ROOT/scripts/nfs-lib.sh"
   local uri mountpoint
   uri=$(cfg transport.uri)
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
@@ -112,31 +115,32 @@ mount() {
     exit 1
   }
   nfs_validate_mountpoint "$mountpoint" || exit 1
-  if findmnt -n "$mountpoint" >/dev/null 2>&1; then
+  if nfs_share_is_live "$mountpoint"; then
+    nfs_upgrade_existing_units "$uri" "$mountpoint" || true
+    nfs_remount_hardening "$mountpoint"
     exit 0
   fi
   sudo_noninteractive mkdir -p "$mountpoint" || exit 1
   local fstype opts
   fstype=$(_nfs_type)
-  opts="rw,hard,nconnect=8,noatime,nosuid,nodev,noexec,proto=tcp,_netdev"
+  opts=$(nfs_mount_options)
   if ! sudo_noninteractive mount -t "$fstype" -o "$opts" "$uri" "$mountpoint"; then
-    sudo_noninteractive mount -t "$fstype" -o rw,hard,noatime,nosuid,nodev,noexec,proto=tcp,_netdev "$uri" "$mountpoint" || exit 1
+    sudo_noninteractive mount -t "$fstype" -o "$(nfs_mount_options_fallback)" "$uri" "$mountpoint" || exit 1
   fi
 }
 
 unmount() {
   local mountpoint
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
-  sudo umount "$mountpoint" 2>/dev/null || true
+  sudo_noninteractive umount "$mountpoint" 2>/dev/null || true
 }
 
 ready() {
   local repo mountpoint
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
   repo=$(cfg restic.repo)
-  stat "$mountpoint" >/dev/null 2>&1 || true
-  findmnt -n "$mountpoint" >/dev/null 2>&1 || return 1
-  [[ -n "$repo" ]]
+  [[ -n "$repo" ]] || return 1
+  nfs_share_is_live "$mountpoint"
 }
 
 bootstrap-install() {

@@ -11,9 +11,19 @@ capabilities() { printf '%s\n' "mount"; }
 
 setup() {
   local mountpoint repo
-  mountpoint=$(cfg transport.mountpoint "$HOME/Backups")
+  mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
   mountpoint=$(gum_input "Directory that holds the restic repo" "$mountpoint")
-  mkdir -p "$mountpoint"
+  mountpoint="${mountpoint%/}"
+  [[ -n "$mountpoint" ]] || exit 1
+  if ! findmnt -n "$mountpoint" >/dev/null 2>&1; then
+    case "$mountpoint" in
+      /mnt/*|/media/*|/run/media/*)
+        printf '%s\n' "$mountpoint is not mounted. Mount the share or disk first." >&2
+        exit 1
+        ;;
+    esac
+    mkdir -p "$mountpoint"
+  fi
   repo=$(cfg restic.repo "$mountpoint/omaclone/repo")
   repo=$(gum_input "Restic repo path" "$repo")
   cfg_set transport.backend local
@@ -25,9 +35,21 @@ mount() { ready; }
 unmount() { exit 0; }
 
 ready() {
-  local repo
+  local repo mp parent
   repo=$(cfg restic.repo)
-  [[ -n "$repo" && -d "$(dirname "$repo")" ]]
+  mp=$(cfg transport.mountpoint)
+  [[ -n "$repo" ]] || return 1
+  parent=$(dirname "$repo")
+  [[ -d "$parent" ]] || return 1
+  if [[ -n "$mp" ]] && findmnt -n "$mp" >/dev/null 2>&1; then
+    mount_wake "$mp"
+    [[ -n "$(mount_fstype_live "$mp")" ]]
+    return
+  fi
+  case "$mp" in
+    /mnt/*|/media/*|/run/media/*) return 1 ;;
+  esac
+  return 0
 }
 
 bootstrap-install() {

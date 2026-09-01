@@ -23,7 +23,7 @@ for f in "${files[@]}"; do
   bash -n "$f" || fail "bash -n $f"
 done
 
-python3 -m py_compile "$ROOT"/scripts/*.py || fail "py_compile failed"
+python3 -m py_compile "$ROOT"/scripts/*.py "$ROOT"/tests/s3_create_bucket.py || fail "py_compile failed"
 
 "$ROOT/scripts/omaclone" -h | grep -q verify || fail "usage missing verify"
 "$ROOT/scripts/omaclone" -h | grep -q estimate || fail "usage missing estimate"

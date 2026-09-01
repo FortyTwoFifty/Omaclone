@@ -24,5 +24,9 @@ jobs:
         run: |
           shellcheck --severity=error scripts/omaclone scripts/cmd-*.sh scripts/lib.sh scripts/restore \
             || echo "shellcheck reported issues (non-fatal unless --severity=error fails)"
+      - name: Pull MinIO
+        run: docker pull minio/minio:latest
       - name: Run tests
+        env:
+          OMACLONE_REQUIRE_S3: "1"
         run: ./tests/run.sh

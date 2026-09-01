@@ -31,7 +31,7 @@ Usage:
   omaclone init                  restic init on the configured repo
   omaclone prune
   omaclone retention [set PRESET] [--yes]
-  omaclone location              List clone locations
+  omaclone location [--json]     List clone locations
   omaclone location switch [ID]  Make a location active
   omaclone location add          Register another NAS / disk / cloud
   omaclone location remove [ID]  Forget a location (does not erase the drive)

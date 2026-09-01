@@ -3,7 +3,7 @@ if [[ -n "${OMACLONE_LOCATIONS_LOADED:-}" ]]; then
 fi
 OMACLONE_LOCATIONS_LOADED=1
 
-_location_keys=(backend uri mountpoint repo label profile vendor uuid device fstype mode schedule endpoint bucket prefix region username port host remote_path)
+_location_keys=(backend uri mountpoint repo label profile vendor uuid device fstype mode schedule endpoint bucket prefix region tls username port host remote_path)
 
 location_ids() {
   local raw id
@@ -99,7 +99,7 @@ location_drop() {
     config_set locations.ids "${out[*]}"
   else
     config_set locations.ids ""
-    for key in backend uri mountpoint uuid device fstype mode endpoint bucket prefix region username port host remote_path; do
+    for key in backend uri mountpoint uuid device fstype mode endpoint bucket prefix region tls username port host remote_path; do
       config_set "transport.${key}" ""
     done
     config_set restic.repo ""
@@ -153,12 +153,28 @@ location_ids_add() {
   config_set locations.ids "${out[*]}"
 }
 
+location_drop_orphans() {
+  local section id ids_csv
+  ids_csv=",$(config_get locations.ids),"
+  ids_csv="${ids_csv// /,}"
+  while IFS= read -r section; do
+    [[ "$section" == locations.* ]] || continue
+    id="${section#locations.}"
+    [[ -n "$id" ]] || continue
+    case ",$ids_csv," in
+      *",$id,"*) continue ;;
+    esac
+    config_drop "$section"
+  done < <(python3 "$NAS_BACKUP_ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" dump 2>/dev/null | jq -r 'keys[]' 2>/dev/null || true)
+}
+
 location_ids_compact() {
   local id backend uuid active current compact=""
   local -A keep_uuid=()
   local out=()
   current=$(config_get locations.ids)
   active=$(location_active_id)
+  location_drop_orphans
   if [[ -n "$active" ]]; then
     backend=$(location_get "$active" backend)
     uuid=$(location_get "$active" uuid)
@@ -238,8 +254,15 @@ location_default_schedule() {
 location_default_label() {
   local backend="${1:-}"
   local profile="${2:-}"
+  local mode="${3:-}"
   case "$backend" in
-    disk) printf '%s\n' "Extra disk" ;;
+    disk)
+      if [[ "$mode" == cold ]]; then
+        printf '%s\n' "USB"
+      else
+        printf '%s\n' "Extra disk"
+      fi
+      ;;
     nfs|cifs|sftp) printf '%s\n' "NAS" ;;
     s3) printf '%s\n' "Cloud (S3)" ;;
     local) printf '%s\n' "Local path" ;;
@@ -247,9 +270,33 @@ location_default_label() {
   esac
 }
 
+_location_wake() {
+  local mp="${1:-}"
+  [[ -n "$mp" ]] || return 0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 8 stat "$mp" >/dev/null 2>&1 || true
+  else
+    stat "$mp" >/dev/null 2>&1 || true
+  fi
+}
+
+_location_tcp_up() {
+  local host="$1" port="${2:-22}"
+  [[ -n "$host" ]] || return 1
+  python3 -c '
+import socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+try:
+    s = socket.create_connection((host, port), 2)
+    s.close()
+except OSError:
+    sys.exit(1)
+' "$host" "$port" 2>/dev/null
+}
+
 location_connected() {
   local id="$1"
-  local backend mode uuid mp repo
+  local backend mode uuid mp repo host port fstype
   backend=$(location_get "$id" backend)
   mode=$(location_get "$id" mode)
   uuid=$(location_get "$id" uuid)
@@ -259,19 +306,65 @@ location_connected() {
     disk)
       [[ -n "$uuid" && -e "/dev/disk/by-uuid/$uuid" ]]
       ;;
-    nfs|cifs)
-      [[ -n "$mp" ]] && findmnt -n "$mp" >/dev/null 2>&1
+    nfs)
+      [[ -n "$mp" ]] || return 1
+      _location_wake "$mp"
+      findmnt -n -t nfs,nfs4 "$mp" >/dev/null 2>&1
+      ;;
+    cifs)
+      [[ -n "$mp" ]] || return 1
+      _location_wake "$mp"
+      findmnt -n -t cifs "$mp" >/dev/null 2>&1
       ;;
     local)
-      [[ -n "$repo" && -d "$(dirname "$repo")" ]]
+      [[ -n "$repo" && -d "$(dirname "$repo")" ]] || return 1
+      if [[ -n "$mp" ]] && findmnt -n "$mp" >/dev/null 2>&1; then
+        _location_wake "$mp"
+        fstype=$(findmnt -n -o FSTYPE "$mp" 2>/dev/null | awk '$1 != "" && $1 != "autofs" { print; exit }')
+        [[ -n "$fstype" ]]
+        return
+      fi
+      case "$mp" in
+        /mnt/*|/media/*|/run/media/*) return 1 ;;
+      esac
+      return 0
       ;;
-    s3|sftp)
+    sftp)
+      host=$(location_get "$id" host)
+      port=$(location_get "$id" port 22)
+      _location_tcp_up "$host" "${port:-22}"
+      ;;
+    s3)
       return 0
       ;;
     *)
       [[ -n "$mp" && -e "$mp" ]]
       ;;
   esac
+}
+
+location_prepare_mount() {
+  local id="$1"
+  local backend mp prev rc=0
+  backend=$(location_get "$id" backend)
+  mp=$(location_get "$id" mountpoint)
+  _location_wake "$mp"
+  location_connected "$id" && return 0
+  case "$backend" in
+    nfs|cifs|disk|local) ;;
+    *) return 1 ;;
+  esac
+  prev=$(location_active_id)
+  if [[ -z "$prev" || "$prev" == "$id" ]]; then
+    nas_backup_backend_run transport "$backend" mount || return 1
+    location_connected "$id"
+    return
+  fi
+  location_apply_transport "$id"
+  nas_backup_backend_run transport "$backend" mount || rc=$?
+  location_apply_transport "$prev"
+  (( rc == 0 )) || return 1
+  location_connected "$id"
 }
 
 location_save_current() {
@@ -313,6 +406,7 @@ location_save_current() {
   location_set "$id" bucket "$(config_get transport.bucket)"
   location_set "$id" prefix "$(config_get transport.prefix)"
   location_set "$id" region "$(config_get transport.region)"
+  location_set "$id" tls "$(config_get transport.tls)"
   location_set "$id" username "$(config_get transport.username)"
   location_set "$id" port "$(config_get transport.port)"
   location_set "$id" host "$(config_get transport.host)"
@@ -340,6 +434,7 @@ location_apply_transport() {
   config_set transport.bucket "$(location_get "$id" bucket)"
   config_set transport.prefix "$(location_get "$id" prefix)"
   config_set transport.region "$(location_get "$id" region)"
+  config_set transport.tls "$(location_get "$id" tls)"
   config_set transport.username "$(location_get "$id" username)"
   config_set transport.port "$(location_get "$id" port)"
   config_set transport.host "$(location_get "$id" host)"
@@ -448,17 +543,63 @@ def connected(loc: dict) -> bool:
     repo = loc.get("repo", "")
     if backend == "disk":
         return bool(uuid) and Path(f"/dev/disk/by-uuid/{uuid}").exists()
-    if backend in {"nfs", "cifs"}:
+    if backend == "nfs":
         if not mp:
             return False
         try:
-            subprocess.check_call(["findmnt", "-n", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            os.stat(mp)
+        except OSError:
+            pass
+        try:
+            subprocess.check_call(["findmnt", "-n", "-t", "nfs,nfs4", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except (OSError, subprocess.CalledProcessError):
+            return False
+    if backend == "cifs":
+        if not mp:
+            return False
+        try:
+            os.stat(mp)
+        except OSError:
+            pass
+        try:
+            subprocess.check_call(["findmnt", "-n", "-t", "cifs", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
         except (OSError, subprocess.CalledProcessError):
             return False
     if backend == "local":
-        return bool(repo) and Path(repo).parent.is_dir()
-    if backend in {"s3", "sftp"}:
+        if not repo or not Path(repo).parent.is_dir():
+            return False
+        if mp:
+            try:
+                subprocess.check_call(["findmnt", "-n", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except (OSError, subprocess.CalledProcessError):
+                return not (mp.startswith("/mnt/") or mp.startswith("/media/") or mp.startswith("/run/media/"))
+            try:
+                os.stat(mp)
+            except OSError:
+                pass
+            try:
+                out = subprocess.check_output(["findmnt", "-n", "-o", "FSTYPE", mp], text=True, stderr=subprocess.DEVNULL)
+            except (OSError, subprocess.CalledProcessError):
+                return False
+            return any(line.strip() and line.strip() != "autofs" for line in out.splitlines())
+        return True
+    if backend == "sftp":
+        host = loc.get("host", "")
+        if not host:
+            return False
+        try:
+            port = int(loc.get("port") or 22)
+        except (TypeError, ValueError):
+            port = 22
+        try:
+            import socket
+            with socket.create_connection((host, port), 2):
+                return True
+        except OSError:
+            return False
+    if backend == "s3":
         return True
     return bool(mp) and Path(mp).exists()
 
