@@ -61,6 +61,7 @@ Panel {
       rows.push({ id: "clone", title: "Clone now", subtitle: "Save an identity clone", command: ["clone"] })
       rows.push({ id: "keep", title: "Change keep plan…", subtitle: "How long clones are retained", command: [] })
       rows.push({ id: "snapshots", title: "Clones", subtitle: "List restic snapshots of this identity", command: ["snapshots"] })
+      rows.push({ id: "verify", title: "Verify clones…", subtitle: "restic check of a data subset", command: ["verify"] })
       rows.push({ id: "add-location", title: "Add location…", subtitle: "Register another NAS, disk, or cloud", command: ["location", "add"] })
       rows.push({ id: "forget", title: "Remove clones…", subtitle: "Delete clones from this location", command: ["forget"] })
       rows.push({ id: "forget-location", title: "Forget location…", subtitle: "Drop a saved location; does not erase the drive", command: ["location", "remove"] })
@@ -409,9 +410,10 @@ Panel {
                 required property var modelData
                 required property int index
                 width: parent.width
+                panel: root
+                backup: backup
                 rowIndex: index
                 loc: modelData
-                hasCursor: root.cursorActive && root.focusSection === "locations" && root.locationIndex === index
               }
             }
 
@@ -474,10 +476,12 @@ Panel {
 
             Repeater {
               model: root.keepPresets
-              RetentionRow {
+              KeepPlan {
                 required property var modelData
                 required property int index
                 width: parent.width
+                panel: root
+                backup: backup
                 preset: modelData
                 rowIndex: index
               }
@@ -547,6 +551,7 @@ Panel {
                 required property var modelData
                 required property int index
                 width: actionColumn.width
+                panel: root
                 action: modelData
                 rowIndex: index
               }
@@ -687,48 +692,6 @@ Panel {
     }
   }
 
-  component RetentionRow: CursorSurface {
-    id: keepRow
-    property var preset: null
-    property int rowIndex: 0
-    hasCursor: root.cursorActive && root.focusSection === "retention" && root.retentionIndex === rowIndex
-    foreground: root.foreground
-    implicitHeight: Style.space(36)
-
-    readonly property bool isCurrent: preset && preset.id === backup.retentionPreset
-
-    Rectangle {
-      anchors.fill: parent
-      radius: Style.cornerRadius
-      color: keepRow.hasCursor || keepRow.isCurrent ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10) : "transparent"
-    }
-
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onEntered: {
-        root.cursorActive = true
-        root.focusSection = "retention"
-        root.retentionIndex = keepRow.rowIndex
-      }
-      onClicked: root.selectRetention(keepRow.rowIndex)
-    }
-
-    Text {
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(10)
-      text: (keepRow.preset ? keepRow.preset.label : "") + (keepRow.isCurrent ? "  · current" : "")
-      color: root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.body
-      elide: Text.ElideRight
-    }
-  }
-
   component ConfirmButton: Item {
     id: confirmBtn
     property string label: ""
@@ -758,155 +721,6 @@ Panel {
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onClicked: confirmBtn.clicked()
-    }
-  }
-
-  component ActionRow: CursorSurface {
-    id: actionRow
-    property var action: null
-    property int rowIndex: 0
-    hasCursor: root.cursorActive && root.focusSection === "actions" && root.actionIndex === rowIndex
-    foreground: root.foreground
-    implicitHeight: actionInner.implicitHeight + Style.spacing.rowPaddingX
-
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onEntered: {
-        root.cursorActive = true
-        root.focusSection = "actions"
-        root.actionIndex = actionRow.rowIndex
-      }
-      onClicked: root.launchAction(actionRow.rowIndex)
-    }
-
-    RowLayout {
-      id: actionInner
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(10)
-      spacing: Style.space(8)
-
-      ColumnLayout {
-        Layout.fillWidth: true
-        spacing: Style.space(1)
-        Text {
-          Layout.fillWidth: true
-          text: action ? action.title : ""
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-          elide: Text.ElideRight
-        }
-        Text {
-          Layout.fillWidth: true
-          text: action ? action.subtitle : ""
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
-        }
-      }
-
-      PanelActionButton {
-        iconText: "󰁔"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        onClicked: root.launchAction(actionRow.rowIndex)
-      }
-    }
-  }
-
-  component LocationRadio: CursorSurface {
-    id: locRow
-    property int rowIndex: 0
-    property var loc: null
-    readonly property string locId: loc && loc.id ? String(loc.id) : ""
-    readonly property string _epoch: root.locationEpoch
-    readonly property bool isActive: !!(locId && locId === String(backup.locationId))
-    readonly property bool rounded: Style.cornerRadius > 0
-    hasCursor: root.cursorActive && root.focusSection === "locations" && root.locationIndex === locRow.rowIndex
-    foreground: root.foreground
-    implicitHeight: Math.max(Style.space(54), radioContent.implicitHeight + Style.spacing.rowPaddingX)
-
-    Rectangle {
-      anchors.fill: parent
-      radius: Style.cornerRadius
-      color: locRow.hasCursor || locRow.isActive ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10) : "transparent"
-    }
-
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onEntered: {
-        root.cursorActive = true
-        root.focusSection = "locations"
-        root.locationIndex = locRow.rowIndex
-      }
-      onClicked: root.selectLocation(locRow.rowIndex)
-    }
-
-    Row {
-      id: radioContent
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(10)
-      spacing: Style.space(10)
-
-      Column {
-        width: parent.width - mark.width - parent.spacing
-        spacing: Style.space(2)
-        anchors.verticalCenter: parent.verticalCenter
-
-        Text {
-          width: parent.width
-          text: locRow.loc ? (locRow.loc.label || locRow.loc.id) : ""
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.subtitle
-          font.bold: true
-          elide: Text.ElideRight
-        }
-
-        Text {
-          width: parent.width
-          text: locRow.loc ? root.locationDescription(locRow.loc) : ""
-          color: Qt.darker(root.foreground, 1.5)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-      }
-
-      Rectangle {
-        id: mark
-        width: Style.space(22)
-        height: Style.space(22)
-        radius: locRow.rounded ? width / 2 : 0
-        anchors.verticalCenter: parent.verticalCenter
-        color: locRow.isActive
-          ? Style.selectedFillFor(root.foreground, Color.accent)
-          : Style.normalFillFor(root.foreground, Color.accent)
-        border.width: 1
-        border.color: locRow.isActive
-          ? Style.selectedStateColor(root.foreground, Color.accent)
-          : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.35)
-
-        Rectangle {
-          visible: locRow.isActive
-          anchors.centerIn: parent
-          width: Style.space(10)
-          height: width
-          radius: locRow.rounded ? width / 2 : 0
-          color: Style.selectedStateColor(root.foreground, Color.accent)
-        }
-      }
     }
   }
 }

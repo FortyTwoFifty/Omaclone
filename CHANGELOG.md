@@ -14,3 +14,7 @@
 - CIFS UNC is validated; NFS/CIFS/disk mounts use `nosuid,nodev,noexec`. SFTP uses `StrictHostKeyChecking=yes`.
 - First-run pane is a setup door, not a warning shotgun. Widening the keep plan does not prune.
 - Identity clone includes ssh/gpg/browsers; Flatpak Steam is excluded. `omaclone --version` prints `1.5.0`.
+- CLI split into `cmd-setup.sh` / `cmd-clone.sh` / `cmd-restore.sh` / `cmd-status.sh`. Pane rows live in `ActionRow.qml`, `LocationRadio.qml`, `KeepPlan.qml`.
+- `omaclone verify` (`restic check --read-data-subset=1/10`), `omaclone estimate`, and `omaclone copy [ID]` to another mounted location.
+- First-clone setup shows a size estimate. `OMACLONE_*` env vars are canonical aliases for `NAS_BACKUP_*`.
+- CI runs `python3 -m py_compile` and shellcheck errors.

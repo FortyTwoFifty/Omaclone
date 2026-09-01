@@ -55,6 +55,7 @@ sid=$(restic --password-file "$pwfile" --repo "$repo" snapshots --json | jq -r '
 [[ -n "$sid" && "$sid" != null ]] || fail "could not read snapshot id"
 
 omaclone_cli check
+omaclone_cli verify
 
 rm -f "$HOME/identity/marker.txt" "$HOME/.config/omaclone-app/settings"
 rmdir "$HOME/.config/omaclone-app" 2>/dev/null || true

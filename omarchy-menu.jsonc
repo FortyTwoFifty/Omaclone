@@ -23,6 +23,12 @@
     "description": "Check mount, uid mapping, repo path",
     "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone doctor'"
   },
+  "omaclone.verify": {
+    "icon": "󰡕",
+    "label": "Verify clones…",
+    "description": "restic check of pack data",
+    "action": "omarchy-launch-floating-terminal-with-presentation 'omaclone verify'"
+  },
   "omaclone.snapshots": {
     "icon": "󰃮",
     "label": "Clones",

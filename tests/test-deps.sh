@@ -119,7 +119,7 @@ fi
 
 echo "PASS: unknown verb dispatch returns non-zero for dummy"
 
-if ! grep -q 'setup_is_unfinished' "$ROOT/scripts/omaclone"; then
+if ! grep -q 'setup_is_unfinished' "$ROOT/scripts/cmd-setup.sh"; then
   fail "omaclone should reference setup_is_unfinished for resume gating"
 fi
 

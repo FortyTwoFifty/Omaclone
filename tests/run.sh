@@ -4,6 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 tests=(
+  tests/test-syntax.sh
   tests/test-backend-contract.sh
   tests/test-transport-contract.sh
   tests/test-migration.sh

@@ -74,6 +74,9 @@ omaclone_test_cfg destination.profile cloud
 omaclone_test_cfg transport.endpoint example.r2.cloudflarestorage.com
 omaclone_test_cfg transport.bucket mybucket
 omaclone_test_cfg restic.repo "s3:https://example.r2.cloudflarestorage.com/mybucket/omaclone"
+est=$(clone_estimate_text)
+[[ -n "$est" ]] || fail "clone_estimate_text empty"
+
 ver=$("$ROOT/scripts/omaclone" --version)
 [[ "$ver" == "1.5.0" ]] || fail "omaclone --version expected 1.5.0, got $ver"
 

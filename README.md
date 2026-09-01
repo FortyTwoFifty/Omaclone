@@ -256,6 +256,9 @@ omaclone location switch [ID]           Make a location active (timers follow it
 omaclone location remove [ID] [--yes]   Forget a location (does not erase the drive)
 omaclone location schedule [ID] [on|off]
 omaclone doctor                         Mount, uid mapping, repo path
+omaclone estimate                       Size of $HOME after excludes
+omaclone verify [--all]                 restic check of a data subset (or all packs)
+omaclone copy [ID]                      Copy clones to another mounted location
 omaclone --version                      Plugin version
 ```
 

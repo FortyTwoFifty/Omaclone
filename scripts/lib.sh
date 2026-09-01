@@ -152,7 +152,7 @@ PY
 }
 
 _NAS_BACKUP_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-NAS_BACKUP_ROOT="${NAS_BACKUP_ROOT:-$(cd "$_NAS_BACKUP_LIB_DIR/.." && pwd)}"
+NAS_BACKUP_ROOT="${NAS_BACKUP_ROOT:-${OMACLONE_ROOT:-$(cd "$_NAS_BACKUP_LIB_DIR/.." && pwd)}}"
 
 _xdg_config="${XDG_CONFIG_HOME:-$HOME/.config}"
 _xdg_data="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -171,11 +171,17 @@ omaclone_migrate_tree() {
   cp -a "$old"/. "$new"/
 }
 
+if [[ -z "${NAS_BACKUP_USER_CONFIG_DIR:-}" && -n "${OMACLONE_USER_CONFIG_DIR:-}" ]]; then
+  NAS_BACKUP_USER_CONFIG_DIR="$OMACLONE_USER_CONFIG_DIR"
+fi
 if [[ -z "${NAS_BACKUP_USER_CONFIG_DIR:-}" ]]; then
   for _old in "${_legacy_config_dirs[@]}"; do
     omaclone_migrate_tree "$_old" "$_default_config_dir"
   done
   NAS_BACKUP_USER_CONFIG_DIR="$_default_config_dir"
+fi
+if [[ -z "${NAS_BACKUP_STATE_DIR:-}" && -n "${OMACLONE_STATE_DIR:-}" ]]; then
+  NAS_BACKUP_STATE_DIR="$OMACLONE_STATE_DIR"
 fi
 if [[ -z "${NAS_BACKUP_STATE_DIR:-}" ]]; then
   for _old in "${_legacy_state_dirs[@]}"; do
@@ -184,7 +190,7 @@ if [[ -z "${NAS_BACKUP_STATE_DIR:-}" ]]; then
   NAS_BACKUP_STATE_DIR="$_default_state_dir"
 fi
 
-NAS_BACKUP_CONFIG="${NAS_BACKUP_CONFIG:-$NAS_BACKUP_USER_CONFIG_DIR/config.toml}"
+NAS_BACKUP_CONFIG="${NAS_BACKUP_CONFIG:-${OMACLONE_CONFIG:-$NAS_BACKUP_USER_CONFIG_DIR/config.toml}}"
 NAS_BACKUP_STAGING="$NAS_BACKUP_STATE_DIR/staging"
 NAS_BACKUP_PWFILE=""
 NAS_BACKUP_ENVFILE=""
@@ -391,6 +397,56 @@ elif n >= 1024 ** 2:
     print(f"{n / (1024 ** 2):.1f} MiB")
 elif n >= 1024:
     print(f"{n / 1024:.1f} KiB")
+else:
+    print(f"{n} B")
+PY
+}
+
+clone_estimate_text() {
+  local exclude="$NAS_BACKUP_ROOT/config/excludes.txt"
+  python3 - "$HOME" "$exclude" <<'PY'
+import os, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+excludes = []
+p = Path(sys.argv[2])
+if p.is_file():
+    for line in p.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        excludes.append(s.lstrip("/"))
+total = 0
+for dirpath, dirnames, filenames in os.walk(home, followlinks=False):
+    rel = os.path.relpath(dirpath, home)
+    if rel == ".":
+        rel = ""
+    skip = False
+    for pat in excludes:
+        if pat.endswith("/"):
+            pat = pat.rstrip("/")
+        if rel == pat or rel.startswith(pat + os.sep) or pat in dirnames:
+            if pat in dirnames:
+                dirnames.remove(pat)
+            if rel == pat or rel.startswith(pat + os.sep):
+                skip = True
+                break
+    if skip:
+        dirnames[:] = []
+        continue
+    for name in filenames:
+        fp = Path(dirpath) / name
+        try:
+            total += fp.stat().st_size
+        except OSError:
+            pass
+n = int(total)
+if n >= 1024 ** 3:
+    print(f"{n / (1024 ** 3):.2f} GiB")
+elif n >= 1024 ** 2:
+    print(f"{n / (1024 ** 2):.0f} MiB")
+elif n >= 1024:
+    print(f"{n / 1024:.0f} KiB")
 else:
     print(f"{n} B")
 PY

@@ -433,26 +433,13 @@ from pathlib import Path
 config = Path(sys.argv[1])
 root = Path(sys.argv[2])
 
+import importlib.util
+_spec = importlib.util.spec_from_file_location("omaclone_config", str(root / "scripts" / "config.py"))
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+
 def load_toml(path: Path) -> dict:
-    data = {}
-    section = ""
-    if not path.is_file():
-        return data
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        if s.startswith("[") and s.endswith("]"):
-            section = s[1:-1]
-            data.setdefault(section, {})
-            continue
-        if "=" in s and section:
-            k, v = s.split("=", 1)
-            v = v.strip()
-            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-                v = v[1:-1]
-            data[section][k.strip()] = v
-    return data
+    return _mod.load(path)
 
 def connected(loc: dict) -> bool:
     backend = loc.get("backend", "")
