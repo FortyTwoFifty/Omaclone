@@ -115,16 +115,15 @@ _preset_endpoint() {
 _s3_prompt_keys() {
   source "$NAS_BACKUP_ROOT/scripts/lib.sh"
   local access secret token=""
-  echo "Access key id is AKIA… / ASIA… (or the provider’s key id). Not an IAM role ARN." >&2
-  access=$(_s3_normalize_key "$(gum_input "Access key id (not an ARN)" "")")
+  access=$(_s3_normalize_key "$(gum_input "Access key id" "")")
   [[ -n "$access" ]] || { printf '%s\n' "access key id is required" >&2; return 1; }
   if [[ "$access" == arn:* ]]; then
-    printf '%s\n' "That is an ARN. Restic authenticates with an access key id and secret, not a role ARN. Create an IAM user (or access keys on the user) and paste the AKIA… key. A role ARN is optional later as RESTIC_AWS_ASSUME_ROLE_ARN." >&2
+    printf '%s\n' "Paste the access key id from the IAM user, not a role ARN." >&2
     return 1
   fi
   secret=$(_s3_normalize_key "$(gum_password "Secret access key")")
   [[ -n "$secret" ]] || { printf '%s\n' "secret access key is required" >&2; return 1; }
-  echo "Storing keys in the Omaclone keyring (not sudo, not FIDO)." >&2
+  tui_note "Storing keys in the Omaclone keyring (not sudo, not FIDO)."
   python3 "$NAS_BACKUP_ROOT/scripts/keyring_store.py" ensure || return 1
   printf '%s' "$access" | transport_secret_put s3-access-key
   printf '%s' "$secret" | transport_secret_put s3-secret-key
@@ -192,6 +191,7 @@ _s3_verify_access() {
 
 _setup_aws() {
   local bucket region detected="" picked
+  tui_brief_file s3-aws
   bucket=$(_s3_normalize_bucket "$(gum_input "Bucket name" "$(cfg transport.bucket "")")")
   [[ -n "$bucket" ]] || { printf '%s\n' "bucket is required" >&2; exit 1; }
   detected=$(_s3_trim "$(_aws_detect_region "$bucket")")
@@ -209,7 +209,7 @@ _setup_aws() {
     "ca-central-1 (Canada)" \
     "sa-east-1 (São Paulo)" \
     "Other…" \
-    | gum choose --header="AWS region of the bucket (restic: s3.<region>.amazonaws.com)")
+    | gum choose --header="AWS region of the bucket")
   if [[ "$picked" == Other* ]]; then
     region=$(gum_input "AWS region (us-east-1, eu-west-1, …)" "${detected:-}")
   else
@@ -228,14 +228,14 @@ _setup_aws() {
 
 _setup_r2() {
   local account jurisdiction endpoint bucket
-  account=$(gum_input "Cloudflare account id (or paste the full R2 endpoint)" "")
+  account=$(gum_input "Cloudflare account id or R2 endpoint" "")
   account=$(_s3_trim "$account")
   jurisdiction=$(printf '%s\n' \
     "Automatic (default)" \
     "EU" \
     "US" \
     "FedRAMP" \
-    | gum choose --header="R2 jurisdiction (https://developers.cloudflare.com/r2/reference/data-location/)")
+    | gum choose --header="R2 data location")
   if [[ "$account" == *.* ]]; then
     endpoint="$account"
     endpoint="${endpoint#https://}"
@@ -278,7 +278,7 @@ _setup_wasabi() {
     "ap-northeast-2  s3.ap-northeast-2.wasabisys.com (Osaka)" \
     "ap-southeast-1  s3.ap-southeast-1.wasabisys.com (Singapore)" \
     "ap-southeast-2  s3.ap-southeast-2.wasabisys.com (Sydney)" \
-    | gum choose --header="Wasabi region (https://docs.wasabi.com/docs/what-are-the-service-urls-for-wasabis-different-storage-regions)")
+    | gum choose --header="Wasabi region of the bucket")
   region="${picked%%  *}"
   endpoint=$(printf '%s' "$picked" | awk '{print $2}')
   bucket=$(_s3_normalize_bucket "$(gum_input "Bucket name" "$(cfg transport.bucket "")")")
@@ -293,8 +293,7 @@ _setup_wasabi() {
 
 _setup_b2() {
   local endpoint region bucket
-  echo "On the B2 bucket page, copy the S3 endpoint (s3.us-west-004.backblazeb2.com — not the B2 native b2: URL)." >&2
-  endpoint=$(gum_input "B2 S3 endpoint host" "$(cfg transport.endpoint "")")
+  endpoint=$(gum_input "S3 endpoint from the B2 bucket page" "$(cfg transport.endpoint "")")
   endpoint=$(_s3_trim "$endpoint")
   endpoint="${endpoint#https://}"
   endpoint="${endpoint#http://}"
@@ -316,7 +315,7 @@ _setup_b2() {
 
 _setup_minio() {
   local raw endpoint tls=0 bucket region
-  raw=$(gum_input "MinIO / custom endpoint (host:port, include http:// if needed)" "$(cfg transport.endpoint "")")
+  raw=$(gum_input "Endpoint (host:port)" "$(cfg transport.endpoint "")")
   raw=$(_s3_trim "$raw")
   if [[ "$raw" == https://* ]]; then
     tls=1
@@ -354,7 +353,7 @@ setup() {
       "Wasabi" \
       "Backblaze B2 (S3 API)" \
       "MinIO / custom endpoint" \
-      | gum choose --header="Which S3-compatible service?")
+      | gum choose --header="Which cloud?")
     case "$preset" in
       Cloudflare*) preset=r2 ;;
       AWS*) preset=aws ;;
@@ -380,9 +379,9 @@ setup() {
   cfg_set transport.backend s3
   cfg_set restic.repo "$(_restic_url)"
 
-  echo "Store S3 access keys in the keyring (not in config)." >&2
+  tui_note "Access keys are stored in the Omaclone keyring, not in config."
   _s3_prompt_keys
-  if [[ "$preset" == aws ]] && have_cmd gum && gum confirm "Assume an IAM role (optional RESTIC_AWS_ASSUME_ROLE_ARN)?"; then
+  if [[ "$preset" == aws ]] && have_cmd gum && gum confirm "Assume an IAM role?"; then
     _s3_prompt_role_arn
   else
     cfg_set transport.role_arn ""

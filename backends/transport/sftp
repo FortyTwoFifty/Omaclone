@@ -60,6 +60,7 @@ _restic_url() {
 
 setup() {
   local host user port remote
+  tui_brief_file sftp
   host=$(cfg transport.host "")
   user=$(cfg transport.username "$USER")
   port=$(cfg transport.port 22)

@@ -19,6 +19,7 @@ The setup wizard lists **all** shipped backends; unavailable ones are labeled `[
 | `describe` | One line for `gum choose` |
 | `available` | 0 if the CLI is installed |
 | `setup` | Write non-secret keys into `$NAS_BACKUP_CONFIG` via `scripts/config.py`. Do not print the password. |
+| `brief` | Optional. Print a one-line hint to stdout after the backend is chosen (restic vs keyring vs FIDO). Empty is success. |
 | `get` | Print **only** the restic password on stdout. The core writes that onto a `600` tmpfs file, then unlinks it and passes restic `/dev/fd/N` so the secret is not a named file in `ps`. |
 | `put` | Optional. Read the password from stdin and store it. `prompt` must not implement this. |
 | `unlock` | Optional. Interactive sign-in for the password manager. Not a secret. Attach stdio to /dev/tty. Exit 2 if unsupported. |
@@ -48,6 +49,7 @@ Verbs: `id`, `describe`, `available`, `setup`, `mount`, `unmount`, `ready`, `boo
 | `discover` | Optional. One JSON object per line: `id`, `label`, `uri`, `hint`, optional `config` / `restore` paths. |
 | `pre-restic` | Optional. Called after the tmpfs env file is created (`$NAS_BACKUP_ENVFILE`). S3 writes `AWS_*` there. Cold disks mount. |
 | `post-restic` | Optional. Cold disks unmount. |
+| `brief` | Optional. Print a one-line field hint to stdout (plain text). Empty is success. Unknown verbs still fail. Shown next to that backend’s fields, not as a preamble. Copy lives in `briefs/<id>.txt`; full detail is in the README. |
 
 Transport `install` is optional and installs missing CLIs (nfs-utils, cifs-utils, openssh). Notify backends may implement `install` and `setup` the same way.
 

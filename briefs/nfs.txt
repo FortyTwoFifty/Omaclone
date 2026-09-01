@@ -1,0 +1,1 @@
+The export must be writable as this user (TrueNAS: Mapall User/Group).

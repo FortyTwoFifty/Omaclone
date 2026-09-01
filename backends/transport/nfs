@@ -38,6 +38,7 @@ setup() {
   ensure_nfs_utils
   source "$NAS_BACKUP_ROOT/scripts/lib.sh"
 
+  tui_brief_file nfs
   local uri mountpoint repo
   uri=$(cfg transport.uri "")
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)

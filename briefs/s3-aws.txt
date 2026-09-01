@@ -1,0 +1,1 @@
+Create the bucket in AWS first. The IAM policy to attach is in the README.

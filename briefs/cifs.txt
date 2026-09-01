@@ -1,0 +1,1 @@
+Daily clones run only while this share is mounted. Use NFS for an always-on NAS.

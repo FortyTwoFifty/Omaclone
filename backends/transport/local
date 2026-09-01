@@ -15,6 +15,14 @@ setup() {
   mountpoint=$(gum_input "Directory that holds the restic repo" "$mountpoint")
   mountpoint="${mountpoint%/}"
   [[ -n "$mountpoint" ]] || exit 1
+  case "$mountpoint" in
+    "$HOME"|"$HOME"/*)
+      printf '%s\n' "This path is under \$HOME. The clone includes \$HOME, so the repo would sit inside the snapshot set." >&2
+      if have_cmd gum && ! gum confirm "Use a path under \$HOME anyway?"; then
+        exit 1
+      fi
+      ;;
+  esac
   if ! findmnt -n "$mountpoint" >/dev/null 2>&1; then
     case "$mountpoint" in
       /mnt/*|/media/*|/run/media/*)

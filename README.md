@@ -81,7 +81,7 @@ Installed only for the transport you pick.
 | NAS over SMB | `cifs-utils` | `mount.cifs`. Share password goes in Omaclone’s GNOME Keyring collection (`libsecret`) |
 | NAS over SFTP | `openssh` | `ssh`, `scp` |
 | Extra disk | — | Uses `lsblk` / `findmnt`. USB/hotplug defaults to `udisksctl` (mount while cloning). The system disk and EFI partitions are never offered. Clones live in `<mount>/omaclone/`. Formatting a blank disk needs `mkfs.ext4` (`e2fsprogs`) |
-| S3-compatible cloud | — | Restic’s native S3 backend. Access keys go in Omaclone’s GNOME Keyring collection, never `config.toml`. AWS uses `s3.<region>.amazonaws.com` (restic docs); R2 uses `<accountid>.r2.cloudflarestorage.com` and region `auto`; Wasabi uses the region service URL; B2 uses the S3 endpoint on the bucket page; MinIO defaults to HTTP |
+| S3-compatible cloud | — | Restic’s native S3 backend. Access keys go in Omaclone’s GNOME Keyring collection, never `config.toml`. Setup shows per-provider requirements first (AWS IAM policy, R2 token, Wasabi region URL, B2 S3 endpoint). AWS uses `s3.<region>.amazonaws.com` (restic docs); R2 uses `<accountid>.r2.cloudflarestorage.com` and region `auto`; Wasabi uses the region service URL; B2 uses the S3 endpoint on the bucket page; MinIO defaults to HTTP |
 | Already-mounted path | — | No extra packages |
 
 ### Optional — restic password
@@ -109,17 +109,17 @@ Pick one in setup. Paste-each-time needs nothing extra and cannot run from the d
 
 ## First-time setup
 
-`omaclone setup` is a gum TUI. It never writes the restic password to disk.
+`omaclone setup` is a gum TUI. It never writes the restic password to disk. Each screen is one question. A one-line hint appears only on the field it applies to (for example Mapall next to the NFS URI, IAM next to the AWS bucket). `omaclone location add` uses the same flow. Walkthroughs and copy-paste policy JSON are in [Destinations](#destinations) and [Security](#security) below. Omaclone does not create NAS shares, S3 buckets, or IAM users.
 
 1. **Create a clone** or **restore from an existing one**.
 2. **Where it lives**
    - NAS (TrueNAS, Synology, Unraid, …) via NFS, SMB, or SFTP
-   - Extra disk (2nd NVMe, USB, cold/off-site drive)
+   - Extra disk (USB is cold / timer off; a 2nd NVMe can be hot / timer on)
    - S3-compatible cloud (Cloudflare R2, AWS, Wasabi, Backblaze B2 S3 API, MinIO)
    - A path that is already mounted
 3. **How to get the restic password** — Proton Pass (`pass-cli`), 1Password (`op`), GNOME Keyring, or paste each time (nothing stored).
 4. **How long to keep clones** — last 5, 7 days, 30 days, 3 months, 1 year, or the standard mix (7 daily / 4 weekly / 6 monthly / 2 yearly).
-5. Optional: enable the daily timer and bar widget, initialize the restic repo, run the first clone.
+5. Optional: enable the daily timer, initialize the restic repo, run the first clone.
 
 It writes a **recovery card** to `~/.local/share/omaclone/RECOVERY.md` (no passwords, no access keys): where the clone is and how to restore it on a new computer. Keep that card with the restic password.
 
@@ -135,7 +135,7 @@ Prefer a dedicated NAS dataset or a disk you are willing to use only for clones.
 
 ### NFS
 
-Setup checks each NFS field (URI `host:/export`, local mountpoint, restic repo path) and **probes the export with a timed test mount before installing systemd `.mount` / `.automount` units**. A typo, a down NAS, or a path that is not exported fails in the wizard and does not leave orphan system services. If an automount is installed and still does not come up, the units are rolled back.
+Setup checks each NFS field (URI `host:/export`, local mountpoint, restic repo path) and **probes the export with a timed test mount before installing systemd `.mount` / `.automount` units**. A typo, a down NAS, or a path that is not exported fails in the wizard and does not leave orphan system services. If an automount is installed and still does not come up, the units are rolled back. The NFS URI prompt reminds you the export must be writable as this uid (TrueNAS **Mapall** / Synology squash).
 
 NFS uses numeric UIDs. If `ls` on the export shows an owner other than your Linux uid (usually 1000), writes fail.
 
@@ -195,9 +195,39 @@ A longer walkthrough is in [RESTORE.md](RESTORE.md).
 
 Vendor names are wizard hints, not separate backends. Synology does not need a DSM API: SMB or SFTP is enough.
 
-**Cold USB:** plug it in. Setup mounts it with `udisksctl` (no sudo, no fixed path) and puts the restic repo in `omaclone/` on that volume — existing files stay. A preferred path (for example `/mnt/external-NVMe`) is attempted with sudo; if that fails, the desktop mount is used and setup still finishes. If it is unplugged when the daily timer fires, the clone is skipped and you get a notification — not a hard failure. Always-plugged extra disks can install a systemd mount and the daily timer.
+**SMB:** UNC `//server/share`. The share password goes in the Omaclone keyring, never `config.toml` or `mount.cifs` argv. Omaclone does **not** install a CIFS automount — daily clones run only while the share is mounted. Use NFS if you want an always-on NAS.
 
-**S3** cannot ship a runnable `./restore` file. Recovery is `omarchy plugin add` then the plugin-tree `omaclone restore`. Access keys live in the keyring, never in `config.toml`. Restic wants an **access key id** (`AKIA…` / `ASIA…`) and secret, not an IAM role ARN. The IAM policy still names bucket ARNs (`arn:aws:s3:::bucket` and `arn:aws:s3:::bucket/*`); you do not paste those into the wizard. Temporary `ASIA…` keys also need a session token.
+**SFTP:** restic uses SSH with `BatchMode=yes` (keys only). Run `ssh-copy-id user@host` before setup; the daily timer cannot type a password.
+
+**Cold USB:** plug it in. Setup mounts it with `udisksctl` (no sudo, no fixed path) and puts the restic repo in `omaclone/` on that volume — existing files stay. A preferred path (for example `/mnt/external-NVMe`) is attempted with sudo; if that fails, the desktop mount is used and setup still finishes. If it is unplugged when the daily timer fires, the clone is skipped and you get a notification — not a hard failure. Always-plugged extra disks can install a systemd mount and the daily timer. USB stays cold unless you opt in. ext4/btrfs/xfs are first-class; FAT/exFAT/NTFS work but are a poor choice for large clones. Omaclone does not encrypt the disk (LUKS is yours). Format is optional and destructive (`DESTROY`).
+
+**Already mounted:** the path must already be mounted and writable. `/mnt`, `/media`, and `/run/media` are refused if not mounted. Do not put the repo under `$HOME`.
+
+**S3** cannot ship a runnable `./restore` file — there is **no `./restore` file** in the bucket. Recovery is `omarchy plugin add` then the plugin-tree `omaclone restore`. Access keys live in the keyring, never in `config.toml`. Restic wants an **access key id** (`AKIA…` / `ASIA…`) and secret, not an IAM role ARN. Temporary `ASIA…` keys also need a session token.
+
+Create the AWS bucket in the console first. Attach this policy to a **dedicated IAM user** (not the root account). `ListBucket` and `GetBucketLocation` are on the **bucket ARN** (no `/*`); object actions are on `bucket/*`. You do not paste those ARNs into the wizard — setup points here when you pick AWS.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ResticBucket",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+      "Resource": "arn:aws:s3:::BUCKET"
+    },
+    {
+      "Sid": "ResticObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::BUCKET/*"
+    }
+  ]
+}
+```
+
+Other providers: R2 uses an Object Read & Write token and region `auto`; Wasabi needs the region service URL (`s3.wasabisys.com` is US East 1 only); B2 uses the S3 endpoint on the bucket page, not native `b2:`; MinIO may use HTTP.
 
 You can register **more than one location** and switch the active one:
 
@@ -307,6 +337,7 @@ Edit `config/excludes.txt` (gitignore-style, relative to `$HOME`) and `config/ha
 - Restic password is **never** in `config.toml`, shell history, journald, or `ps`. After it is read, the named tmpfs file is unlinked and restic is given `/dev/fd/N` only.
 - Paste-once uses `gum input --password`. A generated password is printed to the tty by the shell, not passed to `gum` as an argument.
 - Clone failures store a short mapped message (`password was rejected`, I/O, permission, no space). Restic stderr is not copied into `last-result.json`, desktop notifications, or the bar.
+- Three different secrets: the **restic password** (encrypts the clone; lose it and snapshots are gone), the **Omaclone keyring password** (unwraps `omaclone.keyring`; not FIDO; asked in the terminal), and **transport secrets** (S3 keys, SMB password) in that same collection. Do not mix them up.
 - SMB passwords and S3 keys use Omaclone’s own GNOME Keyring collection (or a prompt). Never the default desktop keyring, never `mount.cifs` argv. Writing to an unencrypted default keyring can make gnome-keyring refuse to load it after a secret with a newline is stored (Proton VPN and similar), which drops every other app’s saved passwords.
 - Do not reuse login, LUKS, or password-manager master passwords for the restic repo.
 - Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`) contain **no secrets**. `SHA256SUMS` covers the scripts and backends the kit will execute; it is not a signature. Prefer `omarchy plugin add` from git. The recovery card includes a kit tree digest you can compare.
@@ -325,6 +356,7 @@ Omaclone/
 ├── manifest.json          # Omarchy plugin (omaclone.plugin)
 ├── Panel.qml              # Bar chip + popup
 ├── backends/              # secrets / transport / notify
+├── briefs/                # one-line field hints (full detail is in this README)
 ├── config/                # excludes, hardware skip list, /etc allowlist
 ├── scripts/omaclone       # CLI
 ├── systemd/               # user clone + prune timers
@@ -348,6 +380,7 @@ Individual files still work:
 ```bash
 ./tests/test-backend-contract.sh
 ./tests/test-transport-contract.sh
+./tests/test-briefs.sh
 ./tests/test-migration.sh
 ./tests/test-retention.sh
 ./tests/test-locations.sh

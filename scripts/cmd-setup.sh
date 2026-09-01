@@ -30,9 +30,9 @@ _maybe_generate_restic_password() {
 _setup_pick_destination() {
   local where transport
   where=$(printf '%s\n' \
-    "NAS (TrueNAS, Synology, Unraid, …)" \
-    "Extra disk (USB, 2nd drive, cold storage)" \
-    "Cloud (S3-compatible: R2, AWS, Wasabi, B2, MinIO)" \
+    "NAS (TrueNAS, Synology, Unraid)" \
+    "Extra disk (USB or a second drive)" \
+    "Cloud (R2, AWS, Wasabi, B2, MinIO)" \
     "A path that is already mounted" \
     | gum choose --header="Where should this clone live?")
   case "$where" in
@@ -42,20 +42,14 @@ _setup_pick_destination() {
       vendor=$(printf '%s\n' \
         "TrueNAS (NFS recommended)" \
         "Synology (SMB or SFTP recommended)" \
+        "Unraid" \
         "Other" \
         | gum choose --header="What kind of NAS?")
       case "$vendor" in
-        TrueNAS*)
-          config_set destination.vendor truenas
-          tui_note "A dedicated NFS dataset is typical. Prefer NFSv4."
-          ;;
-        Synology*)
-          config_set destination.vendor synology
-          tui_note "SMB or SFTP is usually easier than NFS uid mapping on Synology."
-          ;;
-        *)
-          config_set destination.vendor other
-          ;;
+        TrueNAS*) config_set destination.vendor truenas ;;
+        Synology*) config_set destination.vendor synology ;;
+        Unraid*) config_set destination.vendor unraid ;;
+        *) config_set destination.vendor other ;;
       esac
       transport=$(nas_backup_backend_choose_all transport "How should this machine reach the NAS?" nfs cifs sftp)
       nas_backup_backend_ensure transport "$transport" || die "could not install $transport CLI; fix and re-run: omaclone setup"
@@ -208,8 +202,8 @@ _setup_register_location() {
   fi
   schedule=$(location_default_schedule "$backend" "$mode")
   if [[ "$schedule" == off ]]; then
-    :
-  elif tui_confirm "Run automatic daily clones to this location?"; then
+    tui_note "USB stays manual. Turn on daily clones later with: omaclone location schedule on"
+  elif tui_confirm "Run automatic daily clones? Needs an unlocked keyring or a signed-in manager."; then
     schedule=on
   else
     schedule=off
@@ -250,6 +244,7 @@ _setup_secrets() {
   secrets=$(nas_backup_backend_choose_all secrets "How should omaclone get the restic password?") || return 1
   nas_backup_backend_ensure secrets "$secrets" || die "could not install $secrets CLI; fix and re-run: omaclone setup"
   [[ "$secrets" == "keyring" ]] || config_set secrets.keyring_offer ""
+  tui_brief_from_backend secrets "$secrets"
   nas_backup_backend_run secrets "$secrets" setup
   _maybe_generate_restic_password
 }

@@ -92,6 +92,7 @@ setup() {
   uri=$(cfg transport.uri "")
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
   user=$(cfg transport.username "$USER")
+  tui_brief_file cifs
   uri=$(gum_input "UNC path (//server/share)" "$uri")
   mountpoint=$(gum_input "Local mountpoint" "$mountpoint")
   user=$(gum_input "SMB username" "$user")
@@ -99,7 +100,6 @@ setup() {
   nfs_validate_mountpoint "$mountpoint" || exit 1
   [[ -n "$user" ]] || { printf '%s\n' "SMB username is required" >&2; exit 1; }
 
-  echo "Daily clones run only while this share is mounted. Use NFS automount for an always-on NAS." >&2
   if ! transport_secret_get smb-password >/dev/null; then
     echo "Store the SMB password in the keyring (not in config)." >&2
     transport_secret_prompt_and_store smb-password "SMB password for $user" || exit 1

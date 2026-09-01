@@ -107,6 +107,11 @@ setup() {
   label=$(_disk_json_get "$rec" label)
 
   if [[ -n "$fstype" && -n "$uuid" ]]; then
+    case "${fstype,,}" in
+      vfat|exfat|ntfs|ntfs3|msdos|fuseblk)
+        echo "FAT/exFAT/NTFS is writable (uid=/gid=) but a poor choice for large clones. Prefer ext4, btrfs, or xfs." >&2
+        ;;
+    esac
     if have_cmd gum; then
       gum confirm "Use $path ($fstype${label:+, $label}) for clones? Existing files will not be erased." || exit 1
     fi

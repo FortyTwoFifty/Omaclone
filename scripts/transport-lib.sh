@@ -59,12 +59,12 @@ mount_is_type() {
 gum_input() {
   local placeholder="$1"
   local value="${2:-}"
+  local header="${3:-${GUM_INPUT_HEADER:-}}"
   if have_cmd gum; then
-    if [[ -n "$value" ]]; then
-      gum input --placeholder "$placeholder" --value "$value" </dev/tty
-    else
-      gum input --placeholder "$placeholder" </dev/tty
-    fi
+    local args=(input --placeholder "$placeholder")
+    [[ -n "$value" ]] && args+=(--value "$value")
+    [[ -n "$header" ]] && args+=(--header "$header")
+    gum "${args[@]}" </dev/tty
   else
     printf '%s\n' "$value"
   fi
@@ -100,6 +100,11 @@ prompt_until() {
   done
 }
 
+if ! declare -F tui_brief >/dev/null 2>&1 && [[ -n "${NAS_BACKUP_ROOT:-}" && -f "$NAS_BACKUP_ROOT/scripts/tui.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$NAS_BACKUP_ROOT/scripts/tui.sh"
+fi
+
 dispatch_transport() {
   local cmd="${1:-}"
   shift || true
@@ -118,6 +123,7 @@ dispatch_transport() {
     discover) discover ;;
     pre-restic) pre_restic ;;
     post-restic) post_restic ;;
+    brief) brief ;;
     *) printf 'unknown verb: %s\n' "$cmd" >&2; exit 2 ;;
   esac
 }
@@ -129,6 +135,15 @@ credential_keys() { return 0; }
 discover() { return 0; }
 pre_restic() { return 0; }
 post_restic() { return 0; }
+
+# Print the markdown briefing for this backend. Empty is fine (dummy / drop-ins).
+brief() {
+  local f="${NAS_BACKUP_ROOT:-}/briefs/${NAS_BACKUP_BACKEND:-}.txt"
+  if [[ -n "${NAS_BACKUP_BACKEND:-}" && -f "$f" ]]; then
+    cat "$f"
+  fi
+  return 0
+}
 
 cifs_validate_unc() {
   local uri="${1:-}"

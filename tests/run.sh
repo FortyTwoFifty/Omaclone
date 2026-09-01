@@ -7,6 +7,7 @@ tests=(
   tests/test-syntax.sh
   tests/test-backend-contract.sh
   tests/test-transport-contract.sh
+  tests/test-briefs.sh
   tests/test-migration.sh
   tests/test-retention.sh
   tests/test-locations.sh
