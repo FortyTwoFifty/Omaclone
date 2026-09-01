@@ -529,6 +529,12 @@ location_activate cloud
 json=$(location_list_json)
 echo "$json" | jq -e '.[] | select(.id=="cloud" and .backend=="s3" and .connected==true)' >/dev/null \
   || fail "s3 location_list_json connected: $json"
+got=$(echo "$json" | jq -r '.[] | select(.id=="cloud") | .snapshotCount // "none"')
+[[ "$got" == none ]] || fail "s3 without stats cache must not invent a clone count: $json"
+write_repo_stats 4 0 0 cloud
+json=$(location_list_json)
+got=$(echo "$json" | jq -r '.[] | select(.id=="cloud") | .snapshotCount')
+[[ "$got" == 4 ]] || fail "s3 snapshotCount from cache expected 4, got $got ($json)"
 
 # Adding S3 must not inherit leftover NAS fields.
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.backend s3
@@ -604,6 +610,12 @@ location_sync_active
 rm -f "$NAS_BACKUP_STATE_DIR/destination.lock"
 location_sync_active
 [[ "$(config_get transport.backend)" == nfs ]] || fail "sync after unlock should restore nas: $(config_get transport.backend)"
+
+# Bar status must not os.stat NFS/CIFS mountpoints (idle autofs hangs the 8s helper).
+nfs_conn=$(awk '/if backend == "nfs":/,/if backend == "cifs":/' "$ROOT/scripts/locations.sh")
+printf '%s\n' "$nfs_conn" | grep -q 'os.stat(' && fail "nfs connected() must not os.stat (wakes autofs)"
+cifs_conn=$(awk '/if backend == "cifs":/,/if backend == "local":/' "$ROOT/scripts/locations.sh")
+printf '%s\n' "$cifs_conn" | grep -q 'os.stat(' && fail "cifs connected() must not os.stat (wakes autofs)"
 
 # Nested destination lock: inner end must not drop setup/switch's lock.
 location_destination_edit_begin

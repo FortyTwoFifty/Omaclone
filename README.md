@@ -239,7 +239,7 @@ omaclone location switch usb   # make the USB active (timer off — it is detach
 omaclone location remove usb   # forget a saved location (does not erase the drive)
 ```
 
-The daily timer follows **only the active location**. A USB that is unplugged is hidden from the pane and has no clone count. Plug it in and the count is read from the restic repo on the drive — nothing is stored on the machine. An empty disk (kit deleted) is dropped when that disk is mounted.
+The daily timer follows **only the active location**. A USB that is unplugged is hidden from the pane and has no clone count. Plug it in and the count is read from the restic repo on the drive — nothing is stored on the machine. An empty disk (kit deleted) is dropped when that disk is mounted. Cloud locations keep the last clone count on this machine after a successful clone; they are not re-listed from S3 on every pane open.
 
 Discovered volumes (USB or NAS mounts with an `omaclone/` kit — `restore` + `config.toml`, a bootstrap marker, or a restic `repo/config`) show up in `omaclone location` and in the bar Location radios. Switching one imports it. Empty drives stay hidden. The pane does not scan the LAN or mount unknown disks.
 
@@ -251,7 +251,7 @@ Plugin id `omaclone.plugin`. Left-click the copied Omarchy mark on the bar.
 
 - **Upper right of the pane:** copied Omarchy mark (the bar logo, stacked like a copy icon)
 - **Locations:** radios for connected clone targets (USB only while plugged in) plus any mounted volume that looks like an Omaclone kit
-- **Tiles:** clone count (dash when nothing is connected), storage (label + size), keep plan
+- **Tiles:** clone count (dash when nothing is connected, or for S3 until a clone has run on this machine), storage (label + size), keep plan. USB/NAS count files on the volume. S3 uses the count saved after clone/prune — the bar does not list the bucket on refresh (no extra LIST/GET charges).
 - **Keep:** click to change retention; a **tighter** plan prunes clones that fall outside it. Widening does not prune.
 - **Storage:** the tile shows the active clone location; click it (or press `l`) to switch. Extra disks are not always labeled USB.
 - **Actions:** setup (until configured), clone now, keep, clones, add location, restore

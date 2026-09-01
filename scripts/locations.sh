@@ -627,12 +627,13 @@ migrate_locations() {
 
 location_list_json() {
   location_forget_absent_disks
-  python3 - "$NAS_BACKUP_CONFIG" "$NAS_BACKUP_ROOT" <<'PY'
+  python3 - "$NAS_BACKUP_CONFIG" "$NAS_BACKUP_ROOT" "${NAS_BACKUP_STATE_DIR:-}" <<'PY'
 import json, os, subprocess, sys
 from pathlib import Path
 
 config = Path(sys.argv[1])
 root = Path(sys.argv[2])
+state_dir = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else Path.home() / ".local/share/omaclone"
 
 import importlib.util
 _spec = importlib.util.spec_from_file_location("omaclone_config", str(root / "scripts" / "config.py"))
@@ -761,6 +762,21 @@ def snap_count(repo: str, mountpoint: str, uuid: str):
         return n
     return None
 
+def cached_snap_count(loc_id: str):
+    if not loc_id:
+        return None
+    path = state_dir / f"repo-stats-{loc_id}.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        n = data.get("snapshotCount")
+        if n is None:
+            return None
+        return int(n)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
 data = load_toml(config)
 forgotten = [t.strip() for t in (data.get("locations", {}).get("forgotten") or "").split("|") if t.strip()]
 active = data.get("locations", {}).get("active", "")
@@ -809,6 +825,8 @@ for loc_id in ids:
     }
     if rec["connected"]:
         n = snap_count(rec["repo"], rec["mountpoint"], rec["uuid"])
+        if n is None:
+            n = cached_snap_count(loc_id)
         if n is not None:
             rec["snapshotCount"] = n
     out.append(rec)

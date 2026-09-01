@@ -224,6 +224,15 @@ cmd_status() {
     packed_bytes=0
   elif lc=$(local_snapshot_count 2>/dev/null); then
     snap_count="$lc"
+  elif [[ -n "$loc_id" && -f "$NAS_BACKUP_STATE_DIR/repo-stats-${loc_id}.json" ]]; then
+    # Remote repos (S3/SFTP) have no local snapshots/ dir. Use the count
+    # written after clone/prune — do not call restic snapshots on status polls.
+    local stats_file="$NAS_BACKUP_STATE_DIR/repo-stats-${loc_id}.json"
+    snap_count=$(jq -r '.snapshotCount // empty' "$stats_file" 2>/dev/null || true)
+    restore_bytes=$(jq -r '.restoreSizeBytes // .repoSizeBytes // 0' "$stats_file" 2>/dev/null || echo 0)
+    packed_bytes=$(jq -r '.packedSizeBytes // 0' "$stats_file" 2>/dev/null || echo 0)
+    [[ "$restore_bytes" =~ ^[0-9]+$ ]] || restore_bytes=0
+    [[ "$packed_bytes" =~ ^[0-9]+$ ]] || packed_bytes=0
   fi
   [[ "$snap_count" =~ ^[0-9]+$ ]] || snap_count=""
   local snap_json=-1

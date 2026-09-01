@@ -325,8 +325,18 @@ omaclone_test_cfg restic.initialized 1
 json=$(omaclone_cli status --json)
 ready=$(printf '%s' "$json" | jq -r '.transportReady')
 conn=$(printf '%s' "$json" | jq -r '.connected')
+snaps=$(printf '%s' "$json" | jq -r '.snapshotCount')
 [[ "$ready" == true ]] || fail "status transportReady with keys: $ready ($json)"
 [[ "$conn" == true ]] || fail "status connected should be true for s3: $conn"
+[[ "$snaps" == "-1" ]] || fail "s3 without stats cache should not invent a clone count: $snaps"
+
+printf '%s\n' '{"snapshotCount":7,"restoreSizeBytes":123,"packedSizeBytes":45,"locationId":"cloud"}' \
+  >"$NAS_BACKUP_STATE_DIR/repo-stats-cloud.json"
+json=$(omaclone_cli status --json)
+snaps=$(printf '%s' "$json" | jq -r '.snapshotCount')
+[[ "$snaps" == 7 ]] || fail "s3 status should use cached clone count: $snaps ($json)"
+locn=$(printf '%s' "$json" | jq -r '.locations[] | select(.id=="cloud") | .snapshotCount')
+[[ "$locn" == 7 ]] || fail "s3 location list should use cached clone count: $locn ($json)"
 
 python3 "$ROOT/scripts/keyring_store.py" delete s3-access-key
 python3 "$ROOT/scripts/keyring_store.py" delete s3-secret-key
