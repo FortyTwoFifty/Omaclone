@@ -238,6 +238,16 @@ config_set() {
   config_py "$NAS_BACKUP_CONFIG" set "$1" "$2"
 }
 
+config_set_many() {
+  if (($# == 0)); then
+    return 0
+  fi
+  if (($# % 2 != 0)); then
+    die "config_set_many: expected KEY VALUE pairs"
+  fi
+  config_py "$NAS_BACKUP_CONFIG" set-many "$@"
+}
+
 config_drop() {
   config_py "$NAS_BACKUP_CONFIG" drop "$1"
 }

@@ -54,26 +54,22 @@ def get(path: Path, dotted: str, default: str = "") -> str:
     section, key = _split_dotted(dotted)
     return load(path).get(section, {}).get(key, default)
 
-def set_key(path: Path, dotted: str, value: str) -> None:
-    if "." not in dotted:
-        raise SystemExit(f"config key must be section.key, got {dotted!r}")
-    section, key = _split_dotted(dotted)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(path.name + ".lock")
-    with open(lock_path, "a", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            _set_key_unlocked(path, section, key, value)
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+def _commit_lines(path: Path, lines: list[str]) -> None:
+    text = "\n".join(lines).rstrip() + "\n"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError as e:
+        if e.errno != errno.EOPNOTSUPP:
+            raise
+    os.replace(tmp, path)
 
-def _set_key_unlocked(path: Path, section: str, key: str, value: str) -> None:
-    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+def _apply_key(lines: list[str], section: str, key: str, value: str) -> list[str]:
     out: list[str] = []
     in_section = False
     seen_section = False
     replaced = False
-    current = ""
     for line in lines:
         stripped = line.strip()
         m = SECTION_RE.match(stripped)
@@ -101,15 +97,42 @@ def _set_key_unlocked(path: Path, section: str, key: str, value: str) -> None:
             out.append("")
         out.append(f"[{section}]")
         out.append(f"{key} = {_quote(value)}")
-    text = "\n".join(out).rstrip() + "\n"
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError as e:
-        if e.errno != errno.EOPNOTSUPP:
-            raise
-    os.replace(tmp, path)
+    return out
+
+def set_key(path: Path, dotted: str, value: str) -> None:
+    if "." not in dotted:
+        raise SystemExit(f"config key must be section.key, got {dotted!r}")
+    section, key = _split_dotted(dotted)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with open(lock_path, "a", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            _set_key_unlocked(path, section, key, value)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+def set_keys(path: Path, pairs: list[tuple[str, str]]) -> None:
+    if not pairs:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with open(lock_path, "a", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+            for dotted, value in pairs:
+                if "." not in dotted:
+                    raise SystemExit(f"config key must be section.key, got {dotted!r}")
+                section, key = _split_dotted(dotted)
+                lines = _apply_key(lines, section, key, value)
+            _commit_lines(path, lines)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+def _set_key_unlocked(path: Path, section: str, key: str, value: str) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    _commit_lines(path, _apply_key(lines, section, key, value))
 
 def drop_section(path: Path, section: str) -> None:
     if not path.is_file() or not section:
@@ -149,7 +172,7 @@ def dump_json(path: Path) -> None:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
-        print("usage: config.py <path> get|set|drop|dump [key] [value]", file=sys.stderr)
+        print("usage: config.py <path> get|set|set-many|drop|dump [key] [value]", file=sys.stderr)
         return 2
     path = Path(argv[1])
     cmd = argv[2]
@@ -158,6 +181,14 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "set":
         set_key(path, argv[3], argv[4] if len(argv) > 4 else "")
+        return 0
+    if cmd == "set-many":
+        args = argv[3:]
+        if len(args) % 2 != 0:
+            print("usage: config.py <path> set-many KEY VALUE [KEY VALUE ...]", file=sys.stderr)
+            return 2
+        pairs = [(args[i], args[i + 1]) for i in range(0, len(args), 2)]
+        set_keys(path, pairs)
         return 0
     if cmd == "drop":
         drop_section(path, argv[3] if len(argv) > 3 else "")

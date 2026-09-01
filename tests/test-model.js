@@ -6,7 +6,7 @@ const assert = require("assert");
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8");
 const ctx = { console };
 vm.createContext(ctx);
-vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectedLabels, locationCloneText, retentionPresets, retentionLabel, retentionShort, retentionRank, retentionTighter };", ctx);
+vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, shouldApplyStatus, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectedLabels, locationCloneText, retentionPresets, retentionLabel, retentionShort, retentionRank, retentionTighter };", ctx);
 const M = ctx.Model;
 
 function fixture(overrides) {
@@ -119,6 +119,13 @@ const cloudBare = { id: "cloud", backend: "s3", source: "config" };
 assert.strictEqual(M.paneLocations([cloudBare]).length, 1, "s3 must stay in the pane without a mount");
 const cloudOff = { id: "cloud", backend: "s3", connected: false, source: "config" };
 assert.strictEqual(M.paneLocations([cloudOff]).length, 1, "s3 is not filtered like an unplugged disk");
+
+assert.strictEqual(M.shouldApplyStatus(false, "nas", { locationId: "s3-aws" }), true)
+assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "s3-aws" }), true)
+assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "nas" }), false, "switching must ignore stale NAS status")
+assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "" }), false)
+assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", null), false)
+assert.strictEqual(M.shouldApplyStatus(true, "", { locationId: "s3-aws" }), false)
 
 const broken = M.parseStatus("{not json");
 assert.strictEqual(broken.lastError, "Failed to parse backup status");

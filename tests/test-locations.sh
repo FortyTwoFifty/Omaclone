@@ -605,6 +605,63 @@ rm -f "$NAS_BACKUP_STATE_DIR/destination.lock"
 location_sync_active
 [[ "$(config_get transport.backend)" == nfs ]] || fail "sync after unlock should restore nas: $(config_get transport.backend)"
 
+# Nested destination lock: inner end must not drop setup/switch's lock.
+location_destination_edit_begin
+location_destination_edit_begin
+location_destination_edit_held || fail "nested begin should hold destination.lock"
+location_destination_edit_end
+location_destination_edit_held || fail "first end should keep destination.lock"
+location_destination_edit_end
+if location_destination_edit_held; then fail "second end should release destination.lock"; fi
+
+# set-many writes every key in one flocked replace; later pairs win.
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set-many \
+  transport.backend s3 \
+  transport.uri leftover \
+  transport.uri "" \
+  restic.repo "s3:s3.amazonaws.com/mybucket/omaclone" \
+  locations.active s3-aws
+[[ "$(config_get transport.backend)" == s3 ]] || fail "set-many backend"
+[[ -z "$(config_get transport.uri)" ]] || fail "set-many later uri should win: $(config_get transport.uri)"
+[[ "$(config_get locations.active)" == s3-aws ]] || fail "set-many active"
+if python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set-many transport.backend s3 leftover 2>/dev/null; then
+  fail "set-many must reject an odd number of arguments"
+fi
+
+# Concurrent status --json must not revert a NAS↔S3 switch (bar pane poll).
+_assert_s3_live() {
+  [[ "$(config_get locations.active)" == s3-aws ]] || fail "active after s3 switch: $(config_get locations.active)"
+  [[ "$(config_get transport.backend)" == s3 ]] || fail "backend after s3 switch: $(config_get transport.backend)"
+  [[ -z "$(config_get transport.uri)" ]] || fail "s3 switch left NAS uri: $(config_get transport.uri)"
+  [[ -z "$(config_get transport.mountpoint)" ]] || fail "s3 switch left NAS mountpoint: $(config_get transport.mountpoint)"
+  [[ "$(config_get restic.repo)" == "s3:s3.amazonaws.com/mybucket/omaclone" ]] \
+    || fail "repo after s3 switch: $(config_get restic.repo)"
+}
+_assert_nas_live() {
+  [[ "$(config_get locations.active)" == nas ]] || fail "active after nas switch: $(config_get locations.active)"
+  [[ "$(config_get transport.backend)" == nfs ]] || fail "backend after nas switch: $(config_get transport.backend)"
+  [[ "$(config_get transport.uri)" == "10.10.0.10:/mnt/plumbus/Omaclone" ]] \
+    || fail "uri after nas switch: $(config_get transport.uri)"
+  [[ "$(config_get restic.repo)" == "/mnt/Omaclone-NAS/omaclone/repo" ]] \
+    || fail "repo after nas switch: $(config_get restic.repo)"
+}
+_overlap_status() {
+  local i
+  for i in 1 2 3 4; do
+    "$ROOT/scripts/omaclone" status --json >/dev/null 2>&1 || true &
+  done
+}
+location_activate nas
+_assert_nas_live
+_overlap_status
+"$ROOT/scripts/omaclone" location switch s3-aws --yes
+wait || true
+_assert_s3_live
+_overlap_status
+"$ROOT/scripts/omaclone" location switch nas --yes
+wait || true
+_assert_nas_live
+
 # Reset live transport drops NAS leftovers before a new backend setup.
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.uri "10.10.0.10:/export"
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.mountpoint "/mnt/Omaclone-NAS"

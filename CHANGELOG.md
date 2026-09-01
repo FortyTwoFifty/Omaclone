@@ -11,6 +11,7 @@
 - S3 setup is per provider (restic + vendor docs): AWS regional endpoint and required region; R2 account id / jurisdiction / region `auto`; Wasabi region service URLs; B2 S3 endpoint from the bucket page; MinIO HTTP(S). Keys are verified with a signed ListObjects probe before `restic init`. Access key is the AKIA/ASIA key id, not an IAM role ARN (optional assume-role ARN is a separate prompt). ASIA keys require a session token. Ambient `~/.aws` credentials and EC2 IMDS cannot override the stored keys.
 - AWS S3 setup requires the bucket region and uses `s3.<region>.amazonaws.com`. A blank region was signed as us-east-1, which AWS reports as Access Denied even with valid keys. restic is passed `-o s3.region` and `AWS_REGION`.
 - Adding AWS/S3 as a second location is independent of NAS: leftover NFS uri/mount/vendor are not copied, bar status no longer rewrites in-progress cloud setup back onto the NAS location, and the pane lists it as Cloud / AWS S3 rather than NAS.
+- Switching locations in the bar pane takes on the first click. An in-flight status poll is no longer reported as “Status helper failed”, and `omaclone status` cannot rewrite NAS over an in-progress S3 switch (atomic `location_apply_transport` plus the destination lock).
 - MinIO / custom S3 endpoints can use HTTP (`transport.tls=0`). AWS, R2, Wasabi, and B2 stay HTTPS.
 - S3 `pre-restic` keeps `$NAS_BACKUP_ENVFILE` so AWS keys actually reach restic. Backend processes do not shred that file on exit.
 - Failed S3 credentials are a password skip (warning chip), not a green “not mounted”.

@@ -41,6 +41,10 @@ Item {
   property string locationEpoch: ""
   property bool paneOpen: false
   property bool _wantDiscover: false
+  property int _statusGen: 0
+  property int _statusRunGen: 0
+  property bool _pendingRefresh: false
+  property bool _statusBusy: false
   readonly property bool hasOfflineRemovable: {
     var src = locations || []
     for (var i = 0; i < src.length; i++) {
@@ -104,7 +108,22 @@ Item {
   }
 
   function refresh() {
-    if (statusProc.running) statusProc.running = false
+    if (switching) {
+      _pendingRefresh = true
+      return
+    }
+    if (statusProc.running || _statusBusy) {
+      _pendingRefresh = true
+      return
+    }
+    _startStatus()
+  }
+
+  function _startStatus() {
+    _pendingRefresh = false
+    _statusBusy = true
+    _statusGen += 1
+    _statusRunGen = _statusGen
     _output = ""
     _error = ""
     refreshing = true
@@ -113,8 +132,14 @@ Item {
     statusProc.running = true
   }
 
+  function _statusFinished() {
+    if (_pendingRefresh && !switching && !_statusBusy && !statusProc.running)
+      _startStatus()
+  }
+
   function applyStatus(raw) {
     var parsed = Model.parseStatus(raw)
+    if (!Model.shouldApplyStatus(switching, locationId, parsed)) return
     configured = parsed.configured === true
     setupComplete = parsed.setupComplete === true
     transportReady = parsed.transportReady === true
@@ -181,6 +206,10 @@ Item {
   }
 
   function applyDiscover(raw) {
+    if (switching) {
+      _wantDiscover = true
+      return
+    }
     var text = String(raw || "").trim()
     if (text === "") return
     var parsed
@@ -228,6 +257,8 @@ Item {
     issueTitle = ""
     switchError = ""
     switching = true
+    _pendingRefresh = false
+    _statusGen += 1
     locationId = String(id)
     if (statusProc.running) statusProc.running = false
     watchdogTimer.restart()
@@ -259,8 +290,14 @@ Item {
     stdout: StdioCollector { id: statusStdout; waitForEnd: true }
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      var runGen = root._statusRunGen
+      root._statusBusy = false
       root.refreshing = false
       if (!root.switching) watchdogTimer.stop()
+      if (runGen !== root._statusGen) {
+        root._statusFinished()
+        return
+      }
       var stdout = String(statusStdout.text || "")
       var stderr = String(statusStderr.text || "")
       if (stdout.trim() !== "") { root.applyStatus(stdout); root._fsWatchArmed = true; }
@@ -269,6 +306,7 @@ Item {
         root.severity = "error"
         root.issueTitle = "Status unreadable"
       }
+      root._statusFinished()
     }
   }
 
@@ -412,6 +450,7 @@ Item {
     running: false
     repeat: false
     onTriggered: {
+      root._statusGen += 1
       if (statusProc.running) statusProc.running = false
       root.refreshing = false
       if (root.switching) {
@@ -419,6 +458,10 @@ Item {
         root.switching = false
         root.switchError = "Location switch timed out"
         root.refresh()
+      } else if (root._statusBusy) {
+        root.lastError = "Status helper failed"
+        root.severity = "error"
+        root.issueTitle = "Status unreadable"
       }
     }
   }

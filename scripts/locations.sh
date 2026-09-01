@@ -311,18 +311,32 @@ location_destination_lock_path() {
 }
 
 location_destination_edit_begin() {
+  local path pid
   mkdir -p "$NAS_BACKUP_STATE_DIR"
-  printf '%s\n' "$$" >"$(location_destination_lock_path)"
+  path=$(location_destination_lock_path)
+  pid=$(head -n 1 "$path" 2>/dev/null || true)
+  if [[ -f "$path" && "$pid" == "$$" ]]; then
+    OMACLONE_DEST_LOCK_DEPTH=$(( ${OMACLONE_DEST_LOCK_DEPTH:-1} + 1 ))
+    return 0
+  fi
+  printf '%s\n' "$$" >"$path"
+  OMACLONE_DEST_LOCK_DEPTH=1
 }
 
 location_destination_edit_end() {
   local path pid
   path=$(location_destination_lock_path)
-  [[ -f "$path" ]] || return 0
+  [[ -f "$path" ]] || { OMACLONE_DEST_LOCK_DEPTH=0; return 0; }
   pid=$(head -n 1 "$path" 2>/dev/null || true)
-  if [[ "$pid" == "$$" ]]; then
-    rm -f "$path"
+  if [[ "$pid" != "$$" ]]; then
+    return 0
   fi
+  OMACLONE_DEST_LOCK_DEPTH=$(( ${OMACLONE_DEST_LOCK_DEPTH:-1} - 1 ))
+  if (( OMACLONE_DEST_LOCK_DEPTH > 0 )); then
+    return 0
+  fi
+  OMACLONE_DEST_LOCK_DEPTH=0
+  rm -f "$path"
 }
 
 location_destination_edit_held() {
@@ -492,27 +506,29 @@ location_save_current() {
 location_apply_transport() {
   local id="$1"
   local backend repo profile key
+  local -a pairs=()
   backend=$(location_get "$id" backend)
   repo=$(location_get "$id" repo)
   [[ -n "$backend" && -n "$repo" ]] || die "unknown location: $id"
-  config_set transport.backend "$backend"
-  config_set restic.repo "$repo"
   profile=$(location_profile_for_backend "$backend" "$(location_get "$id" profile)")
-  config_set destination.profile "$profile"
+  pairs+=(transport.backend "$backend")
+  pairs+=(restic.repo "$repo")
+  pairs+=(destination.profile "$profile")
   if [[ "$profile" == nas ]]; then
-    config_set destination.vendor "$(location_get "$id" vendor)"
+    pairs+=(destination.vendor "$(location_get "$id" vendor)")
   else
-    config_set destination.vendor ""
+    pairs+=(destination.vendor "")
   fi
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
-    config_set "transport.${key}" ""
+    pairs+=("transport.${key}" "")
   done < <(_location_field_keys)
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
-    config_set "transport.${key}" "$(location_get "$id" "$key")"
+    pairs+=("transport.${key}" "$(location_get "$id" "$key")")
   done < <(_location_backend_field_keys "$backend")
-  config_set locations.active "$id"
+  pairs+=(locations.active "$id")
+  config_set_many "${pairs[@]}"
 }
 
 location_schedule_apply() {
@@ -540,7 +556,9 @@ location_schedule_apply() {
 location_activate() {
   local id="$1"
   location_has "$id" || die "unknown location: $id"
+  location_destination_edit_begin
   location_apply_transport "$id"
+  location_destination_edit_end
   location_schedule_apply "$id"
 }
 
@@ -555,6 +573,18 @@ location_sync_active() {
   [[ -n "$backend" ]] || return 0
   want=$(location_get "$id" repo)
   [[ -n "$want" ]] || return 0
+  live=$(config_get restic.repo)
+  if [[ "$live" == "$want" && "$(config_get transport.backend)" == "$backend" ]]; then
+    return 0
+  fi
+  if location_destination_edit_held; then
+    return 0
+  fi
+  id=$(location_active_id)
+  [[ -n "$id" ]] || return 0
+  backend=$(location_get "$id" backend)
+  want=$(location_get "$id" repo)
+  [[ -n "$backend" && -n "$want" ]] || return 0
   live=$(config_get restic.repo)
   if [[ "$live" == "$want" && "$(config_get transport.backend)" == "$backend" ]]; then
     return 0

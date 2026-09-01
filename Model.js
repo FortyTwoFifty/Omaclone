@@ -52,6 +52,14 @@ function parseStatus(raw) {
   }
 }
 
+function shouldApplyStatus(switching, targetId, parsed) {
+  if (!switching) return true
+  if (!parsed || typeof parsed !== "object") return false
+  var got = String(parsed.locationId || "")
+  var want = String(targetId || "")
+  return want !== "" && got === want
+}
+
 function installedLocations(list) {
   var out = []
   if (!list) return out
