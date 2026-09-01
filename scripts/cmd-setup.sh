@@ -62,24 +62,29 @@ _setup_pick_destination() {
       ;;
     Extra*)
       config_set destination.profile disk
+      config_set destination.vendor ""
       transport=disk
       ;;
     Cloud*)
       config_set destination.profile cloud
+      config_set destination.vendor ""
       transport=s3
       ;;
     *)
       config_set destination.profile local
+      config_set destination.vendor ""
       transport=local
       ;;
   esac
+  location_destination_edit_begin
+  location_reset_live_transport "$transport"
   nas_backup_backend_run transport "$transport" setup
 }
 
 _setup_init_repo() {
   if ! have restic; then
-    tui_note "Installing restic…"
-    sudo pacman -S --needed --noconfirm restic jq
+    tui_note "Installing restic with sudo — touch your FIDO key if prompted (not the Omaclone keyring)."
+    sudo_tty pacman -S --needed --noconfirm restic jq
   fi
   need_cmd restic jq
   _setup_ensure_transport || return $?
@@ -144,10 +149,25 @@ _setup_init_repo() {
       if tui_confirm "Initialize a new restic repository at $repo?"; then
         password_load || return 1
         transport_prepare_env
-        restic_exec init
+        errfile=$(mktemp -p "$(_password_tmpdir)" omaclone.err.XXXXXX)
+        set +e
+        restic_exec init >/dev/null 2>"$errfile"
+        rc=$?
+        set -e
+        if (( rc == 0 )); then
+          rm -f "$errfile"
+          password_cleanup
+          mark_repo_initialized
+          return 0
+        fi
+        if grep -qi 'access denied' "$errfile" 2>/dev/null; then
+          tui_error "S3 Access Denied at $repo. Keys can be right and this still happens when the region is wrong (restic signs us-east-1 unless you set the bucket's region) or the IAM user lacks s3:ListBucket on the bucket plus s3:GetObject/PutObject/DeleteObject on objects. AWS also returns Access Denied for a missing bucket."
+        else
+          tui_error "$(tr '\n' ' ' <"$errfile" | cut -c1-400)"
+        fi
+        rm -f "$errfile"
         password_cleanup
-        mark_repo_initialized
-        return 0
+        return 1
       else
         tui_note "Repository not initialized. Run: omaclone setup"
         return 2
@@ -168,17 +188,17 @@ _setup_register_location() {
   if [[ -n "$existing" ]]; then
     suggested="$existing"
   else
-    suggested=$(location_slug "$(location_default_label "$backend" "$(config_get destination.profile)" "$mode")")
+    suggested=$(location_slug "$(location_default_label "$backend" "$(config_get destination.profile)" "$mode" "$(config_get transport.preset)")")
   fi
   if command -v gum >/dev/null 2>&1; then
-    label=$(gum input --placeholder "Name for this location" --value "$(location_get "$existing" label "$(location_default_label "$backend" "$(config_get destination.profile)" "$mode")")" </dev/tty)
+    label=$(gum input --placeholder "Name for this location" --value "$(location_get "$existing" label "$(location_default_label "$backend" "$(config_get destination.profile)" "$mode" "$(config_get transport.preset)")")" </dev/tty)
     if [[ -n "$existing" ]]; then
       id="$existing"
     else
       id=$(gum input --placeholder "Short id" --value "$suggested" </dev/tty)
     fi
   else
-    label=$(location_default_label "$backend" "$(config_get destination.profile)" "$mode")
+    label=$(location_default_label "$backend" "$(config_get destination.profile)" "$mode" "$(config_get transport.preset)")
     id="$suggested"
   fi
   if [[ -n "$existing" ]]; then

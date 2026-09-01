@@ -34,7 +34,7 @@ cfg_s3() {
 [[ "$(_preset_endpoint aws)" == s3.amazonaws.com ]] || fail "aws preset"
 [[ "$(_preset_endpoint r2)" == "" ]] || fail "r2 preset should be empty"
 [[ "$(_preset_endpoint wasabi)" == s3.wasabisys.com ]] || fail "wasabi preset"
-[[ "$(_preset_endpoint b2)" == s3.us-west-000.backblazeb2.com ]] || fail "b2 preset"
+[[ -z "$(_preset_endpoint b2)" ]] || fail "b2 preset should be empty (endpoint comes from the B2 console)"
 [[ "$(_preset_endpoint minio)" == "" ]] || fail "minio preset should be empty"
 [[ "$(_preset_endpoint "")" == "" ]] || fail "empty preset"
 [[ "$(_preset_endpoint nope)" == "" ]] || fail "unknown preset"
@@ -86,6 +86,50 @@ omaclone_test_cfg transport.endpoint s3.amazonaws.com
 omaclone_test_cfg transport.bucket mybucket
 omaclone_test_cfg transport.prefix ""
 expect_url "s3:s3.amazonaws.com/mybucket"
+
+# AWS region rewrites the legacy global endpoint
+omaclone_test_cfg transport.prefix omaclone
+omaclone_test_cfg transport.region us-west-2
+expect_url "s3:s3.us-west-2.amazonaws.com/mybucket/omaclone"
+omaclone_test_cfg transport.region us-east-1
+expect_url "s3:s3.us-east-1.amazonaws.com/mybucket/omaclone"
+omaclone_test_cfg transport.endpoint s3.us-west-2.amazonaws.com
+omaclone_test_cfg transport.region us-west-2
+expect_url "s3:s3.us-west-2.amazonaws.com/mybucket/omaclone"
+omaclone_test_cfg transport.endpoint s3.amazonaws.com
+omaclone_test_cfg transport.region ""
+
+[[ "$(_s3_normalize_bucket '  omaclone  ')" == omaclone ]] || fail "trim bucket"
+[[ "$(_s3_normalize_bucket 's3://omaclone')" == omaclone ]] || fail "s3:// bucket"
+[[ "$(_s3_normalize_bucket 'https://s3.amazonaws.com/omaclone')" == omaclone ]] || fail "path-style url bucket"
+[[ "$(_s3_normalize_bucket 'omaclone.s3.amazonaws.com')" == omaclone ]] || fail "virtual-host bucket"
+[[ "$(_s3_normalize_bucket 's3.us-west-2.amazonaws.com/omaclone/restic')" == omaclone ]] || fail "regional path url"
+[[ "$(_s3_normalize_key '  AKIAEXAMPLE  ')" == AKIAEXAMPLE ]] || fail "trim access key"
+[[ "$(_s3_normalize_key 'AWS_ACCESS_KEY_ID=AKIAEXAMPLE')" == AKIAEXAMPLE ]] || fail "strip env prefix"
+[[ "$(_s3_normalize_key '"AKIAquoted"')" == AKIAquoted ]] || fail "strip quotes"
+
+got=$(python3 "$ROOT/scripts/s3_probe.py" "not a bucket")
+[[ -z "$got" ]] || fail "probe should reject spaces: $got"
+got=$(python3 "$ROOT/scripts/s3_probe.py" "foo/bar")
+[[ -z "$got" ]] || fail "probe should reject slash: $got"
+
+python3 - "$ROOT/scripts/s3_check.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("s3_check", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+url, uri, host = m.list_url("s3.us-west-2.amazonaws.com", "omaclone", "us-west-2", True)
+assert uri == "/", uri
+assert host.startswith("omaclone.s3.us-west-2.amazonaws.com"), host
+url, uri, host = m.list_url("acct.r2.cloudflarestorage.com", "omaclone", "auto", True)
+assert uri == "/omaclone", uri
+assert host == "acct.r2.cloudflarestorage.com", host
+url, uri, host = m.list_url("s3.wasabisys.com", "mybucket", "us-east-1", True)
+assert uri == "/mybucket", uri
+out = m.check_access("", "bucket", "us-east-1", "", "secret")
+assert out["ok"] is False and out["code"] == "MissingInput"
+print("s3_check helpers ok")
+PY
 
 # Default prefix when unset: cfg default is omaclone. Clear by not setting empty —
 # config.py set "" is explicit empty; delete isn't available. Already covered above.
@@ -161,7 +205,7 @@ set +a
 [[ "$AWS_ACCESS_KEY_ID" == AKIAEXAMPLE ]] || fail "AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID"
 [[ "$AWS_SECRET_ACCESS_KEY" == "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" ]] || fail "secret mismatch"
 [[ -z "${AWS_DEFAULT_REGION:-}" ]] || fail "region should be omitted when unset: ${AWS_DEFAULT_REGION:-}"
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_EC2_METADATA_DISABLED
 grep -q AKIAEXAMPLE "$NAS_BACKUP_CONFIG" && fail "access key leaked into config.toml"
 grep -q wJalr "$NAS_BACKUP_CONFIG" && fail "secret leaked into config.toml"
 
@@ -173,7 +217,23 @@ set -a
 source "$envf"
 set +a
 [[ "$AWS_DEFAULT_REGION" == us-west-2 ]] || fail "region: ${AWS_DEFAULT_REGION:-}"
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+[[ "$AWS_REGION" == us-west-2 ]] || fail "AWS_REGION: ${AWS_REGION:-}"
+[[ "${AWS_EC2_METADATA_DISABLED:-}" == true ]] || fail "IMDS should be disabled: ${AWS_EC2_METADATA_DISABLED:-}"
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_REGION AWS_EC2_METADATA_DISABLED
+
+omaclone_test_put_transport_secret s3-session-token "session-token-example"
+omaclone_test_cfg transport.role_arn "arn:aws:iam::123456789012:role/Omaclone"
+: >"$envf"
+NAS_BACKUP_ENVFILE="$envf" run_s3 pre-restic || fail "pre-restic with session/role failed"
+# shellcheck disable=SC1090
+set -a
+source "$envf"
+set +a
+[[ "$AWS_SESSION_TOKEN" == "session-token-example" ]] || fail "session token: ${AWS_SESSION_TOKEN:-}"
+[[ "$RESTIC_AWS_ASSUME_ROLE_ARN" == "arn:aws:iam::123456789012:role/Omaclone" ]] || fail "role arn: ${RESTIC_AWS_ASSUME_ROLE_ARN:-}"
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_REGION AWS_SESSION_TOKEN RESTIC_AWS_ASSUME_ROLE_ARN AWS_EC2_METADATA_DISABLED
+python3 "$ROOT/scripts/keyring_store.py" delete s3-session-token
+omaclone_test_cfg transport.role_arn ""
 
 # Special characters in keys must survive bash %q + source
 omaclone_test_put_transport_secret s3-access-key "id with spaces"

@@ -127,7 +127,15 @@ function storageKind(loc) {
     if (loc.mode === "cold" || /usb|stick/i.test(String(loc.label || ""))) return "USB"
     return "Extra disk"
   }
-  if (b === "s3") return "Cloud"
+  if (b === "s3") {
+    var preset = String(loc.preset || "")
+    if (preset === "aws") return "AWS S3"
+    if (preset === "r2") return "Cloudflare R2"
+    if (preset === "wasabi") return "Wasabi"
+    if (preset === "b2") return "Backblaze B2"
+    if (preset === "minio") return "MinIO"
+    return "Cloud"
+  }
   if (b === "local") return "Local"
   return loc.label || loc.id || ""
 }

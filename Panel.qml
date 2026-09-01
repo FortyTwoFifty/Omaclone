@@ -231,18 +231,13 @@ Panel {
     function cloneNow(): string { backup.launchTui(["clone"]); return "ok" }
   }
 
-  implicitWidth: chip.implicitWidth
-  implicitHeight: chip.implicitHeight
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
 
-  Row {
-    id: chip
-    spacing: Style.space(6)
-    height: button.implicitHeight
-
-    BarIconButton {
-      id: button
-      bar: root.bar
-      Accessible.name: tooltipText
+  BarIconButton {
+    id: button
+    bar: root.bar
+    Accessible.name: tooltipText
     iconComponent: Component {
       Item {
         OmacloneIcon {
@@ -266,25 +261,6 @@ Panel {
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) backup.refresh()
       else root.toggle()
-    }
-  }
-
-    Text {
-      visible: backup.configured && root.clonesText !== "—" && !(root.bar && root.bar.vertical)
-      anchors.verticalCenter: parent.verticalCenter
-      text: root.clonesText
-      color: root.barIconColor
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.body
-      font.bold: true
-      MouseArea {
-        anchors.fill: parent
-        acceptedButtons: Qt.LeftButton | Qt.RightButton
-        onPressed: function(mouse) {
-          if (mouse.button === Qt.RightButton) backup.refresh()
-          else root.toggle()
-        }
-      }
     }
   }
 

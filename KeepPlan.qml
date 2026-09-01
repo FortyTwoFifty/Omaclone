@@ -12,7 +12,7 @@ CursorSurface {
   foreground: panel ? panel.foreground : Color.foreground
   implicitHeight: Style.space(36)
 
-  readonly property bool isCurrent: !!(preset && backup && preset.id === backup.retentionPreset)
+  readonly property bool isCurrent: !!(preset && backup && String(preset["id"] || "") === String(backup.retentionPreset || ""))
 
   Rectangle {
     anchors.fill: parent

@@ -3,7 +3,7 @@ if [[ -n "${OMACLONE_LOCATIONS_LOADED:-}" ]]; then
 fi
 OMACLONE_LOCATIONS_LOADED=1
 
-_location_keys=(backend uri mountpoint repo label profile vendor uuid device fstype mode schedule endpoint bucket prefix region tls username port host remote_path)
+_location_keys=(backend uri mountpoint repo label profile vendor uuid device fstype mode schedule endpoint bucket prefix region tls username port host remote_path preset role_arn lookup)
 
 location_ids() {
   local raw id
@@ -99,7 +99,7 @@ location_drop() {
     config_set locations.ids "${out[*]}"
   else
     config_set locations.ids ""
-    for key in backend uri mountpoint uuid device fstype mode endpoint bucket prefix region tls username port host remote_path; do
+    for key in backend uri mountpoint uuid device fstype mode endpoint bucket prefix region tls username port host remote_path preset role_arn lookup; do
       config_set "transport.${key}" ""
     done
     config_set restic.repo ""
@@ -255,6 +255,7 @@ location_default_label() {
   local backend="${1:-}"
   local profile="${2:-}"
   local mode="${3:-}"
+  local preset="${4:-}"
   case "$backend" in
     disk)
       if [[ "$mode" == cold ]]; then
@@ -264,10 +265,86 @@ location_default_label() {
       fi
       ;;
     nfs|cifs|sftp) printf '%s\n' "NAS" ;;
-    s3) printf '%s\n' "Cloud (S3)" ;;
+    s3)
+      [[ -n "$preset" ]] || preset=$(config_get transport.preset 2>/dev/null || true)
+      case "$preset" in
+        aws) printf '%s\n' "AWS S3" ;;
+        r2) printf '%s\n' "Cloudflare R2" ;;
+        wasabi) printf '%s\n' "Wasabi" ;;
+        b2) printf '%s\n' "Backblaze B2" ;;
+        minio) printf '%s\n' "MinIO" ;;
+        *) printf '%s\n' "Cloud (S3)" ;;
+      esac
+      ;;
     local) printf '%s\n' "Local path" ;;
     *) printf '%s\n' "${profile:-$backend}" ;;
   esac
+}
+
+_location_field_keys() {
+  printf '%s\n' uri mountpoint uuid device fstype mode endpoint bucket prefix region tls username port host remote_path preset role_arn lookup
+}
+
+_location_backend_field_keys() {
+  case "${1:-}" in
+    nfs) printf '%s\n' uri mountpoint ;;
+    cifs) printf '%s\n' uri mountpoint username ;;
+    sftp) printf '%s\n' host port username remote_path ;;
+    disk) printf '%s\n' uuid device fstype mode mountpoint ;;
+    s3) printf '%s\n' endpoint bucket prefix region tls preset role_arn lookup ;;
+    local) printf '%s\n' mountpoint ;;
+  esac
+}
+
+location_profile_for_backend() {
+  case "${1:-}" in
+    nfs|cifs|sftp) printf '%s\n' nas ;;
+    disk) printf '%s\n' disk ;;
+    s3) printf '%s\n' cloud ;;
+    local) printf '%s\n' local ;;
+    *) printf '%s\n' "${2:-}" ;;
+  esac
+}
+
+location_destination_lock_path() {
+  printf '%s\n' "$NAS_BACKUP_STATE_DIR/destination.lock"
+}
+
+location_destination_edit_begin() {
+  mkdir -p "$NAS_BACKUP_STATE_DIR"
+  printf '%s\n' "$$" >"$(location_destination_lock_path)"
+}
+
+location_destination_edit_end() {
+  local path pid
+  path=$(location_destination_lock_path)
+  [[ -f "$path" ]] || return 0
+  pid=$(head -n 1 "$path" 2>/dev/null || true)
+  if [[ "$pid" == "$$" ]]; then
+    rm -f "$path"
+  fi
+}
+
+location_destination_edit_held() {
+  local path pid
+  path=$(location_destination_lock_path)
+  [[ -f "$path" ]] || return 1
+  pid=$(head -n 1 "$path" 2>/dev/null || true)
+  [[ -n "$pid" ]] || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ -d "/proc/$pid" ]]
+}
+
+location_reset_live_transport() {
+  local backend="${1:-}" key
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    config_set "transport.${key}" ""
+  done < <(_location_field_keys)
+  config_set restic.repo ""
+  if [[ -n "$backend" ]]; then
+    config_set transport.backend "$backend"
+  fi
 }
 
 _location_wake() {
@@ -369,7 +446,7 @@ location_prepare_mount() {
 
 location_save_current() {
   local id="$1"
-  local backend mode label schedule
+  local backend mode label schedule profile key
   [[ -n "$id" ]] || die "location id is empty; run: omaclone setup"
   backend=$(config_get transport.backend)
   [[ -n "$backend" ]] || die "no transport configured"
@@ -388,57 +465,53 @@ location_save_current() {
     fi
     config_set transport.mode "$mode"
   fi
-  label="${2:-$(location_default_label "$backend" "$(config_get destination.profile)" "$mode")}"
+  profile=$(location_profile_for_backend "$backend" "$(config_get destination.profile)")
+  label="${2:-$(location_default_label "$backend" "$profile" "$mode" "$(config_get transport.preset)")}"
   schedule="${3:-$(location_default_schedule "$backend" "$mode")}"
   location_set "$id" backend "$backend"
-  location_set "$id" uri "$(config_get transport.uri)"
-  location_set "$id" mountpoint "$(config_get transport.mountpoint)"
   location_set "$id" repo "$(config_get restic.repo)"
   location_set "$id" label "$label"
-  location_set "$id" profile "$(config_get destination.profile)"
-  location_set "$id" vendor "$(config_get destination.vendor)"
-  location_set "$id" uuid "$(config_get transport.uuid)"
-  location_set "$id" device "$(config_get transport.device)"
-  location_set "$id" fstype "$(config_get transport.fstype)"
-  location_set "$id" mode "$mode"
+  location_set "$id" profile "$profile"
+  if [[ "$profile" == nas ]]; then
+    location_set "$id" vendor "$(config_get destination.vendor)"
+  else
+    location_set "$id" vendor ""
+  fi
   location_set "$id" schedule "$schedule"
-  location_set "$id" endpoint "$(config_get transport.endpoint)"
-  location_set "$id" bucket "$(config_get transport.bucket)"
-  location_set "$id" prefix "$(config_get transport.prefix)"
-  location_set "$id" region "$(config_get transport.region)"
-  location_set "$id" tls "$(config_get transport.tls)"
-  location_set "$id" username "$(config_get transport.username)"
-  location_set "$id" port "$(config_get transport.port)"
-  location_set "$id" host "$(config_get transport.host)"
-  location_set "$id" remote_path "$(config_get transport.remote_path)"
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    location_set "$id" "$key" ""
+  done < <(_location_field_keys)
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    location_set "$id" "$key" "$(config_get "transport.$key")"
+  done < <(_location_backend_field_keys "$backend")
   location_ids_add "$id"
 }
 
 location_apply_transport() {
   local id="$1"
-  local backend repo
+  local backend repo profile key
   backend=$(location_get "$id" backend)
   repo=$(location_get "$id" repo)
   [[ -n "$backend" && -n "$repo" ]] || die "unknown location: $id"
   config_set transport.backend "$backend"
-  config_set transport.uri "$(location_get "$id" uri)"
-  config_set transport.mountpoint "$(location_get "$id" mountpoint)"
-  config_set restic.repo "$(location_get "$id" repo)"
-  config_set destination.profile "$(location_get "$id" profile)"
-  config_set destination.vendor "$(location_get "$id" vendor)"
-  config_set transport.uuid "$(location_get "$id" uuid)"
-  config_set transport.device "$(location_get "$id" device)"
-  config_set transport.fstype "$(location_get "$id" fstype)"
-  config_set transport.mode "$(location_get "$id" mode)"
-  config_set transport.endpoint "$(location_get "$id" endpoint)"
-  config_set transport.bucket "$(location_get "$id" bucket)"
-  config_set transport.prefix "$(location_get "$id" prefix)"
-  config_set transport.region "$(location_get "$id" region)"
-  config_set transport.tls "$(location_get "$id" tls)"
-  config_set transport.username "$(location_get "$id" username)"
-  config_set transport.port "$(location_get "$id" port)"
-  config_set transport.host "$(location_get "$id" host)"
-  config_set transport.remote_path "$(location_get "$id" remote_path)"
+  config_set restic.repo "$repo"
+  profile=$(location_profile_for_backend "$backend" "$(location_get "$id" profile)")
+  config_set destination.profile "$profile"
+  if [[ "$profile" == nas ]]; then
+    config_set destination.vendor "$(location_get "$id" vendor)"
+  else
+    config_set destination.vendor ""
+  fi
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    config_set "transport.${key}" ""
+  done < <(_location_field_keys)
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    config_set "transport.${key}" "$(location_get "$id" "$key")"
+  done < <(_location_backend_field_keys "$backend")
   config_set locations.active "$id"
 }
 
@@ -473,6 +546,9 @@ location_activate() {
 
 location_sync_active() {
   local id backend live want
+  if location_destination_edit_held; then
+    return 0
+  fi
   id=$(location_active_id)
   [[ -n "$id" ]] || return 0
   backend=$(location_get "$id" backend)
@@ -697,6 +773,9 @@ for loc_id in ids:
         "repo": loc.get("repo", ""),
         "mountpoint": loc.get("mountpoint", ""),
         "uuid": loc.get("uuid", ""),
+        "mode": loc.get("mode", ""),
+        "preset": loc.get("preset", ""),
+        "profile": loc.get("profile", ""),
     }
     if rec["connected"]:
         n = snap_count(rec["repo"], rec["mountpoint"], rec["uuid"])

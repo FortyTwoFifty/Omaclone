@@ -10,17 +10,78 @@ available() { exit 0; }
 capabilities() { printf '%s\n' "remote"; }
 credential_keys() { printf '%s\n' "s3-access-key" "s3-secret-key"; }
 
+# restic: https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
+# AWS:    s3:s3.<region>.amazonaws.com/<bucket>[/<prefix>]
+#         AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION
+#         optional AWS_SESSION_TOKEN (ASIA… keys), RESTIC_AWS_ASSUME_ROLE_ARN
+# R2:     s3:https://<accountid>.r2.cloudflarestorage.com/<bucket>
+#         region auto — https://developers.cloudflare.com/r2/api/s3/api/
+# Wasabi: s3:https://<service-url>/<bucket>
+#         https://docs.wasabi.com/docs/what-are-the-service-urls-for-wasabis-different-storage-regions
+# B2:     s3:https://s3.<region>.backblazeb2.com/<bucket>
+#         endpoint is on the bucket page — https://www.backblaze.com/docs/cloud-storage-integrate-restic-with-backblaze-b2
+# MinIO:  s3:http(s)://host:port/<bucket>
+
+_s3_trim() {
+  local s="${1:-}"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+_s3_normalize_bucket() {
+  local b
+  b=$(_s3_trim "${1:-}")
+  b="${b#s3://}"
+  b="${b#https://}"
+  b="${b#http://}"
+  case "$b" in
+    s3.amazonaws.com/*|s3.*.amazonaws.com/*)
+      b="${b#*/}"
+      ;;
+    *.s3.amazonaws.com|*.s3.amazonaws.com/*|*.s3.*.amazonaws.com|*.s3.*.amazonaws.com/*)
+      b="${b%%.s3.*}"
+      ;;
+  esac
+  b="${b%%/*}"
+  b="${b%.}"
+  printf '%s' "$b"
+}
+
+_s3_normalize_key() {
+  local k
+  k=$(_s3_trim "${1:-}")
+  k="${k#AWS_ACCESS_KEY_ID=}"
+  k="${k#AWS_SECRET_ACCESS_KEY=}"
+  k="${k#AWS_SESSION_TOKEN=}"
+  k="${k#\"}"
+  k="${k%\"}"
+  k="${k#\'}"
+  k="${k%\'}"
+  printf '%s' "$k"
+}
+
+_aws_detect_region() {
+  local bucket="$1"
+  [[ -n "$bucket" ]] || return 0
+  python3 "$NAS_BACKUP_ROOT/scripts/s3_probe.py" "$bucket" 2>/dev/null || true
+}
+
 _restic_url() {
-  local endpoint bucket prefix tls scheme
+  local endpoint bucket prefix tls scheme region
   endpoint=$(cfg transport.endpoint)
   bucket=$(cfg transport.bucket)
   prefix=$(cfg transport.prefix omaclone)
   tls=$(cfg transport.tls 1)
+  region=$(cfg transport.region)
   endpoint="${endpoint#https://}"
   endpoint="${endpoint#http://}"
   endpoint="${endpoint%/}"
   prefix="${prefix#/}"
   prefix="${prefix%/}"
+  if [[ -n "$region" && "$endpoint" == "s3.amazonaws.com" ]]; then
+    endpoint="s3.${region}.amazonaws.com"
+  fi
   if [[ "$endpoint" == s3.amazonaws.com || "$endpoint" == s3.*.amazonaws.com ]]; then
     if [[ -n "$prefix" ]]; then
       printf 's3:%s/%s/%s\n' "$endpoint" "$bucket" "$prefix"
@@ -45,18 +106,247 @@ _preset_endpoint() {
   local preset="$1"
   case "$preset" in
     aws) printf '%s\n' "s3.amazonaws.com" ;;
-    r2) printf '%s\n' "" ;;
     wasabi) printf '%s\n' "s3.wasabisys.com" ;;
-    b2) printf '%s\n' "s3.us-west-000.backblazeb2.com" ;;
-    minio|"") printf '%s\n' "" ;;
+    r2|b2|minio|"") printf '%s\n' "" ;;
     *) printf '%s\n' "" ;;
   esac
+}
+
+_s3_prompt_keys() {
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  local access secret token=""
+  echo "Access key id is AKIA… / ASIA… (or the provider’s key id). Not an IAM role ARN." >&2
+  access=$(_s3_normalize_key "$(gum_input "Access key id (not an ARN)" "")")
+  [[ -n "$access" ]] || { printf '%s\n' "access key id is required" >&2; return 1; }
+  if [[ "$access" == arn:* ]]; then
+    printf '%s\n' "That is an ARN. Restic authenticates with an access key id and secret, not a role ARN. Create an IAM user (or access keys on the user) and paste the AKIA… key. A role ARN is optional later as RESTIC_AWS_ASSUME_ROLE_ARN." >&2
+    return 1
+  fi
+  secret=$(_s3_normalize_key "$(gum_password "Secret access key")")
+  [[ -n "$secret" ]] || { printf '%s\n' "secret access key is required" >&2; return 1; }
+  echo "Storing keys in the Omaclone keyring (not sudo, not FIDO)." >&2
+  python3 "$NAS_BACKUP_ROOT/scripts/keyring_store.py" ensure || return 1
+  printf '%s' "$access" | transport_secret_put s3-access-key
+  printf '%s' "$secret" | transport_secret_put s3-secret-key
+  if [[ "$access" != ASIA* ]]; then
+    python3 "$NAS_BACKUP_ROOT/scripts/keyring_store.py" delete s3-session-token 2>/dev/null || true
+  fi
+  if [[ "$access" == ASIA* ]]; then
+    echo "ASIA… keys are temporary STS credentials and need a session token." >&2
+    token=$(_s3_normalize_key "$(gum_password "AWS session token")")
+    [[ -n "$token" ]] || { printf '%s\n' "session token is required for ASIA keys" >&2; return 1; }
+    printf '%s' "$token" | transport_secret_put s3-session-token
+  fi
+  unset access secret token
+}
+
+_s3_prompt_role_arn() {
+  local arn
+  arn=$(_s3_trim "$(gum_input "IAM role ARN to assume (empty = none)" "$(cfg transport.role_arn "")")")
+  if [[ -n "$arn" && "$arn" != arn:aws:iam:* ]]; then
+    printf '%s\n' "Role ARN should look like arn:aws:iam::123456789012:role/Name" >&2
+    return 1
+  fi
+  cfg_set transport.role_arn "$arn"
+}
+
+_s3_verify_access() {
+  source "$NAS_BACKUP_ROOT/scripts/lib.sh"
+  local retried="${1:-0}"
+  local endpoint bucket region tls access secret token="" json ok code hint detected
+  endpoint=$(cfg transport.endpoint)
+  bucket=$(cfg transport.bucket)
+  region=$(cfg transport.region)
+  tls=$(cfg transport.tls 1)
+  [[ -n "$region" ]] || region=us-east-1
+  access=$(transport_secret_get s3-access-key) || return 1
+  secret=$(transport_secret_get s3-secret-key) || return 1
+  token=$(transport_secret_get s3-session-token 2>/dev/null || true)
+  json=$(
+    AWS_ACCESS_KEY_ID="$access" AWS_SECRET_ACCESS_KEY="$secret" \
+    AWS_SESSION_TOKEN="$token" \
+    python3 "$NAS_BACKUP_ROOT/scripts/s3_check.py" access "$endpoint" "$bucket" "$region" "$tls"
+  ) || true
+  unset access secret token
+  [[ -n "$json" ]] || { printf '%s\n' "could not probe the bucket" >&2; return 1; }
+  ok=$(printf '%s' "$json" | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("ok") else "false")')
+  if [[ "$ok" == true ]]; then
+    return 0
+  fi
+  code=$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("code",""))')
+  hint=$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("hint",""))')
+  detected=$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("region",""))')
+  if [[ "$retried" != 1 && -n "$detected" && "$detected" != "$region" ]]; then
+    cfg_set transport.region "$detected"
+    if [[ "$(cfg transport.preset)" == aws ]]; then
+      cfg_set transport.endpoint "s3.${detected}.amazonaws.com"
+    fi
+    cfg_set restic.repo "$(_restic_url)"
+    echo "Bucket region is $detected — updated the endpoint and retrying." >&2
+    _s3_verify_access 1
+    return
+  fi
+  printf '%s\n' "${hint:-S3 access check failed ($code)}" >&2
+  return 1
+}
+
+_setup_aws() {
+  local bucket region detected="" picked
+  bucket=$(_s3_normalize_bucket "$(gum_input "Bucket name" "$(cfg transport.bucket "")")")
+  [[ -n "$bucket" ]] || { printf '%s\n' "bucket is required" >&2; exit 1; }
+  detected=$(_s3_trim "$(_aws_detect_region "$bucket")")
+  picked=$(printf '%s\n' \
+    "us-east-1 (N. Virginia)" \
+    "us-east-2 (Ohio)" \
+    "us-west-1 (N. California)" \
+    "us-west-2 (Oregon)" \
+    "eu-west-1 (Ireland)" \
+    "eu-west-2 (London)" \
+    "eu-central-1 (Frankfurt)" \
+    "ap-southeast-1 (Singapore)" \
+    "ap-southeast-2 (Sydney)" \
+    "ap-northeast-1 (Tokyo)" \
+    "ca-central-1 (Canada)" \
+    "sa-east-1 (São Paulo)" \
+    "Other…" \
+    | gum choose --header="AWS region of the bucket (restic: s3.<region>.amazonaws.com)")
+  if [[ "$picked" == Other* ]]; then
+    region=$(gum_input "AWS region (us-east-1, eu-west-1, …)" "${detected:-}")
+  else
+    region="${picked%% *}"
+  fi
+  region=$(_s3_trim "$region")
+  [[ -n "$region" ]] || region="${detected:-}"
+  [[ -n "$region" ]] || { printf '%s\n' "AWS S3 needs the bucket region. Restic signs us-east-1 when it is blank, and AWS returns Access Denied." >&2; exit 1; }
+  cfg_set transport.preset aws
+  cfg_set transport.endpoint "s3.${region}.amazonaws.com"
+  cfg_set transport.bucket "$bucket"
+  cfg_set transport.region "$region"
+  cfg_set transport.tls 1
+  cfg_set transport.lookup auto
+}
+
+_setup_r2() {
+  local account jurisdiction endpoint bucket
+  account=$(gum_input "Cloudflare account id (or paste the full R2 endpoint)" "")
+  account=$(_s3_trim "$account")
+  jurisdiction=$(printf '%s\n' \
+    "Automatic (default)" \
+    "EU" \
+    "US" \
+    "FedRAMP" \
+    | gum choose --header="R2 jurisdiction (https://developers.cloudflare.com/r2/reference/data-location/)")
+  if [[ "$account" == *.* ]]; then
+    endpoint="$account"
+    endpoint="${endpoint#https://}"
+    endpoint="${endpoint#http://}"
+    endpoint="${endpoint%/}"
+  else
+    case "$jurisdiction" in
+      EU*) endpoint="${account}.eu.r2.cloudflarestorage.com" ;;
+      US) endpoint="${account}.us.r2.cloudflarestorage.com" ;;
+      FedRAMP*) endpoint="${account}.fedramp.r2.cloudflarestorage.com" ;;
+      *) endpoint="${account}.r2.cloudflarestorage.com" ;;
+    esac
+  fi
+  bucket=$(_s3_normalize_bucket "$(gum_input "Bucket name" "$(cfg transport.bucket "")")")
+  [[ -n "$endpoint" && -n "$bucket" ]] || { printf '%s\n' "R2 endpoint and bucket are required" >&2; exit 1; }
+  cfg_set transport.preset r2
+  cfg_set transport.endpoint "$endpoint"
+  cfg_set transport.bucket "$bucket"
+  cfg_set transport.region auto
+  cfg_set transport.tls 1
+  cfg_set transport.lookup path
+}
+
+_setup_wasabi() {
+  local picked endpoint region bucket
+  picked=$(printf '%s\n' \
+    "us-east-1  s3.wasabisys.com (N. Virginia)" \
+    "us-east-2  s3.us-east-2.wasabisys.com (N. Virginia)" \
+    "us-central-1  s3.us-central-1.wasabisys.com (Texas)" \
+    "us-west-1  s3.us-west-1.wasabisys.com (Oregon)" \
+    "us-west-2  s3.us-west-2.wasabisys.com (San Jose)" \
+    "ca-central-1  s3.ca-central-1.wasabisys.com (Toronto)" \
+    "eu-central-1  s3.eu-central-1.wasabisys.com (Amsterdam)" \
+    "eu-central-2  s3.eu-central-2.wasabisys.com (Frankfurt)" \
+    "eu-west-1  s3.eu-west-1.wasabisys.com (UK)" \
+    "eu-west-2  s3.eu-west-2.wasabisys.com (Paris)" \
+    "eu-west-3  s3.eu-west-3.wasabisys.com (UK)" \
+    "eu-south-1  s3.eu-south-1.wasabisys.com (Milan)" \
+    "ap-northeast-1  s3.ap-northeast-1.wasabisys.com (Tokyo)" \
+    "ap-northeast-2  s3.ap-northeast-2.wasabisys.com (Osaka)" \
+    "ap-southeast-1  s3.ap-southeast-1.wasabisys.com (Singapore)" \
+    "ap-southeast-2  s3.ap-southeast-2.wasabisys.com (Sydney)" \
+    | gum choose --header="Wasabi region (https://docs.wasabi.com/docs/what-are-the-service-urls-for-wasabis-different-storage-regions)")
+  region="${picked%%  *}"
+  endpoint=$(printf '%s' "$picked" | awk '{print $2}')
+  bucket=$(_s3_normalize_bucket "$(gum_input "Bucket name" "$(cfg transport.bucket "")")")
+  [[ -n "$endpoint" && -n "$bucket" ]] || { printf '%s\n' "Wasabi endpoint and bucket are required" >&2; exit 1; }
+  cfg_set transport.preset wasabi
+  cfg_set transport.endpoint "$endpoint"
+  cfg_set transport.bucket "$bucket"
+  cfg_set transport.region "$region"
+  cfg_set transport.tls 1
+  cfg_set transport.lookup path
+}
+
+_setup_b2() {
+  local endpoint region bucket
+  echo "On the B2 bucket page, copy the S3 endpoint (s3.us-west-004.backblazeb2.com — not the B2 native b2: URL)." >&2
+  endpoint=$(gum_input "B2 S3 endpoint host" "$(cfg transport.endpoint "")")
+  endpoint=$(_s3_trim "$endpoint")
+  endpoint="${endpoint#https://}"
+  endpoint="${endpoint#http://}"
+  endpoint="${endpoint%/}"
+  region=""
+  case "$endpoint" in
+    s3.*.backblazeb2.com) region="${endpoint#s3.}"; region="${region%.backblazeb2.com}" ;;
+  esac
+  [[ -n "$region" ]] || region=$(gum_input "B2 region (us-west-004, …)" "")
+  bucket=$(_s3_normalize_bucket "$(gum_input "Bucket name" "$(cfg transport.bucket "")")")
+  [[ -n "$endpoint" && -n "$bucket" ]] || { printf '%s\n' "B2 endpoint and bucket are required" >&2; exit 1; }
+  cfg_set transport.preset b2
+  cfg_set transport.endpoint "$endpoint"
+  cfg_set transport.bucket "$bucket"
+  cfg_set transport.region "$region"
+  cfg_set transport.tls 1
+  cfg_set transport.lookup path
+}
+
+_setup_minio() {
+  local raw endpoint tls=0 bucket region
+  raw=$(gum_input "MinIO / custom endpoint (host:port, include http:// if needed)" "$(cfg transport.endpoint "")")
+  raw=$(_s3_trim "$raw")
+  if [[ "$raw" == https://* ]]; then
+    tls=1
+  elif [[ "$raw" == http://* ]]; then
+    tls=0
+  else
+    if have_cmd gum && gum confirm "Use HTTPS for this endpoint?"; then
+      tls=1
+    else
+      tls=0
+    fi
+  fi
+  endpoint="${raw#https://}"
+  endpoint="${endpoint#http://}"
+  endpoint="${endpoint%/}"
+  bucket=$(_s3_normalize_bucket "$(gum_input "Bucket name" "$(cfg transport.bucket "")")")
+  region=$(_s3_trim "$(gum_input "Region (us-east-1 if the server ignores it)" "$(cfg transport.region us-east-1)")")
+  [[ -n "$endpoint" && -n "$bucket" ]] || { printf '%s\n' "endpoint and bucket are required" >&2; exit 1; }
+  cfg_set transport.preset minio
+  cfg_set transport.endpoint "$endpoint"
+  cfg_set transport.bucket "$bucket"
+  cfg_set transport.region "$region"
+  cfg_set transport.tls "$tls"
+  cfg_set transport.lookup path
 }
 
 setup() {
   source "$NAS_BACKUP_ROOT/scripts/lib.sh"
 
-  local preset endpoint bucket prefix region
+  local preset prefix
   if have_cmd gum; then
     preset=$(printf '%s\n' \
       "Cloudflare R2" \
@@ -76,49 +366,33 @@ setup() {
     preset=minio
   fi
 
-  endpoint=$(_preset_endpoint "$preset")
-  local tls=1
-  if [[ "$preset" == minio ]]; then
-    tls=0
-  fi
-  if [[ "$preset" == r2 ]]; then
-    local account
-    account=$(gum_input "Cloudflare account id (or paste the full R2 endpoint)" "")
-    if [[ "$account" == *.* ]]; then
-      endpoint="$account"
-    else
-      endpoint="${account}.r2.cloudflarestorage.com"
-    fi
-  elif [[ -z "$endpoint" || "$preset" == minio || "$preset" == b2 ]]; then
-    endpoint=$(gum_input "S3 endpoint host (no https://)" "$endpoint")
-  fi
-  if [[ "$endpoint" == http://* ]]; then
-    tls=0
-  elif [[ "$endpoint" == https://* ]]; then
-    tls=1
-  fi
-  bucket=$(cfg transport.bucket "")
-  bucket=$(gum_input "Bucket name" "$bucket")
-  prefix=$(cfg transport.prefix omaclone)
-  prefix=$(gum_input "Prefix inside the bucket" "$prefix")
-  region=$(cfg transport.region "")
-  if [[ "$preset" == aws || -n "$region" ]]; then
-    region=$(gum_input "Region (us-east-1, …; empty if unused)" "$region")
-  fi
-  [[ -n "$endpoint" && -n "$bucket" ]] || { printf '%s\n' "endpoint and bucket are required" >&2; exit 1; }
+  case "$preset" in
+    aws) _setup_aws ;;
+    r2) _setup_r2 ;;
+    wasabi) _setup_wasabi ;;
+    b2) _setup_b2 ;;
+    *) _setup_minio ;;
+  esac
 
-  cfg_set transport.backend s3
-  cfg_set transport.preset "$preset"
-  cfg_set transport.endpoint "$endpoint"
-  cfg_set transport.bucket "$bucket"
+  prefix=$(cfg transport.prefix omaclone)
+  prefix=$(_s3_trim "$(gum_input "Folder inside the bucket (empty = bucket root)" "$prefix")")
   cfg_set transport.prefix "$prefix"
-  cfg_set transport.region "$region"
-  cfg_set transport.tls "$tls"
+  cfg_set transport.backend s3
   cfg_set restic.repo "$(_restic_url)"
 
   echo "Store S3 access keys in the keyring (not in config)." >&2
-  transport_secret_prompt_and_store s3-access-key "S3 access key id"
-  transport_secret_prompt_and_store s3-secret-key "S3 secret access key"
+  _s3_prompt_keys
+  if [[ "$preset" == aws ]] && have_cmd gum && gum confirm "Assume an IAM role (optional RESTIC_AWS_ASSUME_ROLE_ARN)?"; then
+    _s3_prompt_role_arn
+  else
+    cfg_set transport.role_arn ""
+  fi
+
+  echo "Checking that these keys can list the bucket…" >&2
+  if ! _s3_verify_access; then
+    printf '%s\n' "Fix the keys, region, or IAM policy, then re-run: omaclone location add" >&2
+    exit 1
+  fi
 }
 
 mount() { ready; }
@@ -137,20 +411,30 @@ pre_restic() {
   local envf="${NAS_BACKUP_ENVFILE:-}"
   source "$NAS_BACKUP_ROOT/scripts/lib.sh"
   [[ -n "$envf" ]] || return 0
-  local id secret region
+  local id secret region token="" arn
   id=$(transport_secret_get s3-access-key) || return 1
   secret=$(transport_secret_get s3-secret-key) || return 1
   region=$(cfg transport.region)
+  token=$(transport_secret_get s3-session-token 2>/dev/null || true)
+  arn=$(cfg transport.role_arn)
   umask 077
   {
     printf 'AWS_ACCESS_KEY_ID=%q\n' "$id"
     printf 'AWS_SECRET_ACCESS_KEY=%q\n' "$secret"
+    if [[ -n "$token" ]]; then
+      printf 'AWS_SESSION_TOKEN=%q\n' "$token"
+    fi
     if [[ -n "$region" ]]; then
       printf 'AWS_DEFAULT_REGION=%q\n' "$region"
+      printf 'AWS_REGION=%q\n' "$region"
     fi
+    if [[ -n "$arn" ]]; then
+      printf 'RESTIC_AWS_ASSUME_ROLE_ARN=%q\n' "$arn"
+    fi
+    printf 'AWS_EC2_METADATA_DISABLED=true\n'
   } >"$envf"
   chmod 600 "$envf"
-  unset id secret
+  unset id secret token
 }
 
 bootstrap-install() {

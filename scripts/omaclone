@@ -124,6 +124,7 @@ backfill_destination_profile() {
 main() {
   local cmd="${1:-}"
   shift || true
+  trap 'location_destination_edit_end' EXIT
   backfill_destination_profile
   migrate_locations
   location_sync_active

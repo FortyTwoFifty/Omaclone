@@ -149,7 +149,7 @@ cmd_status() {
   loc_json=$(location_list_json 2>/dev/null || echo '[]')
   [[ "$loc_json" == \[* ]] || loc_json='[]'
   _conn=$(printf '%s' "$loc_json" | jq -r --arg id "$loc_id" \
-    '(map(select(.id == $id)) | .[0].connected) // empty' 2>/dev/null || true)
+    'map(select(.id == $id)) | if length == 0 then empty else (.[0].connected | tostring) end' 2>/dev/null || true)
   if [[ "$_conn" == true ]]; then
     connected=true
   elif [[ "$_conn" == false ]]; then

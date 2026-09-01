@@ -8,11 +8,22 @@ CursorSurface {
   property var backup
   property int rowIndex: 0
   property var loc: null
-  readonly property string locId: loc && loc.id ? String(loc.id) : ""
   readonly property string _epoch: panel ? panel.locationEpoch : ""
-  readonly property bool isActive: !!(locId && backup && locId === String(backup.locationId))
+  readonly property string locId: {
+    var epoch = _epoch
+    return loc ? String(loc["id"] || "") : ""
+  }
+  readonly property bool isActive: {
+    var epoch = _epoch
+    if (loc && loc.active) return true
+    var want = backup ? String(backup.locationId || "") : ""
+    if (!want && panel && panel.activeLoc)
+      want = String(panel.activeLoc["id"] || "")
+    return locId !== "" && want !== "" && locId === want
+  }
   readonly property bool rounded: Style.cornerRadius > 0
   hasCursor: panel && panel.cursorActive && panel.focusSection === "locations" && panel.locationIndex === locRow.rowIndex
+  current: isActive
   foreground: panel ? panel.foreground : Color.foreground
   implicitHeight: Math.max(Style.space(54), radioContent.implicitHeight + Style.spacing.rowPaddingX)
 
@@ -51,7 +62,7 @@ CursorSurface {
 
       Text {
         width: parent.width
-        text: locRow.loc ? (locRow.loc.label || locRow.loc.id) : ""
+        text: locRow.loc ? (locRow.loc.label || locRow.locId) : ""
         color: locRow.foreground
         font.family: panel ? panel.fontFamily : Style.font.family
         font.pixelSize: Style.font.subtitle

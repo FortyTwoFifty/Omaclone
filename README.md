@@ -81,7 +81,7 @@ Installed only for the transport you pick.
 | NAS over SMB | `cifs-utils` | `mount.cifs`. Share password goes in Omaclone’s GNOME Keyring collection (`libsecret`) |
 | NAS over SFTP | `openssh` | `ssh`, `scp` |
 | Extra disk | — | Uses `lsblk` / `findmnt`. USB/hotplug defaults to `udisksctl` (mount while cloning). The system disk and EFI partitions are never offered. Clones live in `<mount>/omaclone/`. Formatting a blank disk needs `mkfs.ext4` (`e2fsprogs`) |
-| S3-compatible cloud | — | Restic’s native S3 backend. Access keys go in Omaclone’s GNOME Keyring collection, never `config.toml`. MinIO defaults to HTTP (`transport.tls=0`); AWS/R2/Wasabi/B2 use HTTPS |
+| S3-compatible cloud | — | Restic’s native S3 backend. Access keys go in Omaclone’s GNOME Keyring collection, never `config.toml`. AWS uses `s3.<region>.amazonaws.com` (restic docs); R2 uses `<accountid>.r2.cloudflarestorage.com` and region `auto`; Wasabi uses the region service URL; B2 uses the S3 endpoint on the bucket page; MinIO defaults to HTTP |
 | Already-mounted path | — | No extra packages |
 
 ### Optional — restic password
@@ -197,7 +197,7 @@ Vendor names are wizard hints, not separate backends. Synology does not need a D
 
 **Cold USB:** plug it in. Setup mounts it with `udisksctl` (no sudo, no fixed path) and puts the restic repo in `omaclone/` on that volume — existing files stay. A preferred path (for example `/mnt/external-NVMe`) is attempted with sudo; if that fails, the desktop mount is used and setup still finishes. If it is unplugged when the daily timer fires, the clone is skipped and you get a notification — not a hard failure. Always-plugged extra disks can install a systemd mount and the daily timer.
 
-**S3** cannot ship a runnable `./restore` file. Recovery is `omarchy plugin add` then the plugin-tree `omaclone restore`. Access keys live in the keyring, never in `config.toml`.
+**S3** cannot ship a runnable `./restore` file. Recovery is `omarchy plugin add` then the plugin-tree `omaclone restore`. Access keys live in the keyring, never in `config.toml`. Restic wants an **access key id** (`AKIA…` / `ASIA…`) and secret, not an IAM role ARN. The IAM policy still names bucket ARNs (`arn:aws:s3:::bucket` and `arn:aws:s3:::bucket/*`); you do not paste those into the wizard. Temporary `ASIA…` keys also need a session token.
 
 You can register **more than one location** and switch the active one:
 

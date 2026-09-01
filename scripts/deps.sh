@@ -21,7 +21,12 @@ _deps_pacman() {
     command ${OMACLONE_PACMAN} "$@"
     return
   fi
-  sudo pacman "$@"
+  if declare -F sudo_tty >/dev/null 2>&1; then
+    printf '%s\n' "Installing packages with sudo — touch your FIDO key if prompted. This is not the Omaclone keyring." >&2
+    sudo_tty pacman "$@"
+  else
+    sudo pacman "$@"
+  fi
 }
 
 deps_ensure_pacman() {

@@ -530,4 +530,89 @@ json=$(location_list_json)
 echo "$json" | jq -e '.[] | select(.id=="cloud" and .backend=="s3" and .connected==true)' >/dev/null \
   || fail "s3 location_list_json connected: $json"
 
+# Adding S3 must not inherit leftover NAS fields.
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.backend s3
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set destination.profile nas
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set destination.vendor truenas
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.uri "10.10.0.10:/mnt/plumbus/Omaclone"
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.mountpoint "/mnt/Omaclone-NAS"
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.endpoint s3.amazonaws.com
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.bucket mybucket
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.prefix omaclone
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.region us-east-1
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.tls 1
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.preset aws
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set restic.repo "s3:s3.amazonaws.com/mybucket/omaclone"
+location_save_current s3-aws "S3-AWS" on
+[[ "$(location_get s3-aws backend)" == s3 ]] || fail "s3-aws backend: $(location_get s3-aws backend)"
+[[ -z "$(location_get s3-aws uri)" ]] || fail "s3-aws must not inherit NAS uri: $(location_get s3-aws uri)"
+[[ -z "$(location_get s3-aws mountpoint)" ]] || fail "s3-aws must not inherit NAS mountpoint"
+[[ "$(location_get s3-aws profile)" == cloud ]] || fail "s3-aws profile: $(location_get s3-aws profile)"
+[[ -z "$(location_get s3-aws vendor)" ]] || fail "s3-aws vendor should be empty: $(location_get s3-aws vendor)"
+[[ "$(location_get s3-aws preset)" == aws ]] || fail "s3-aws preset: $(location_get s3-aws preset)"
+[[ "$(location_get s3-aws bucket)" == mybucket ]] || fail "s3-aws bucket"
+[[ "$(location_get s3-aws endpoint)" == s3.amazonaws.com ]] || fail "s3-aws endpoint"
+json=$(location_list_json)
+echo "$json" | jq -e '.[] | select(.id=="s3-aws" and .backend=="s3" and .preset=="aws")' >/dev/null \
+  || fail "s3-aws list json: $json"
+
+# Switching back to NAS then to S3 must not leave NFS on the live transport.
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.backend nfs
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.uri "10.10.0.10:/mnt/plumbus/Omaclone"
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.mountpoint "/mnt/Omaclone-NAS"
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.repo "/mnt/Omaclone-NAS/omaclone/repo"
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.label NAS
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.profile nas
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.vendor truenas
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.schedule on
+location_ids_add nas
+location_activate nas
+[[ "$(config_get transport.backend)" == nfs ]] || fail "activate nas backend"
+[[ "$(config_get destination.profile)" == nas ]] || fail "activate nas profile"
+location_activate s3-aws
+[[ "$(config_get transport.backend)" == s3 ]] || fail "activate s3 backend: $(config_get transport.backend)"
+[[ -z "$(config_get transport.uri)" ]] || fail "activate s3 left NAS uri: $(config_get transport.uri)"
+[[ -z "$(config_get transport.mountpoint)" ]] || fail "activate s3 left NAS mountpoint: $(config_get transport.mountpoint)"
+[[ "$(config_get destination.profile)" == cloud ]] || fail "activate s3 profile: $(config_get destination.profile)"
+[[ -z "$(config_get destination.vendor)" ]] || fail "activate s3 left NAS vendor"
+[[ "$(config_get transport.preset)" == aws ]] || fail "activate s3 preset"
+[[ "$(config_get transport.bucket)" == mybucket ]] || fail "activate s3 bucket"
+[[ "$(config_get restic.repo)" == "s3:s3.amazonaws.com/mybucket/omaclone" ]] \
+  || fail "activate s3 repo: $(config_get restic.repo)"
+
+# Bar status / location list must not clobber an in-progress S3 add.
+# The pane polls these while setup still holds destination.lock.
+location_activate nas
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.backend s3
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.endpoint s3.amazonaws.com
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.bucket inprogress
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.preset aws
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set restic.repo "s3:s3.amazonaws.com/inprogress/omaclone"
+printf '%s\n' "$$" >"$NAS_BACKUP_STATE_DIR/destination.lock"
+"$ROOT/scripts/omaclone" status --json >/dev/null
+[[ "$(config_get transport.backend)" == s3 ]] || fail "status --json reverted in-progress s3 to $(config_get transport.backend)"
+[[ "$(config_get restic.repo)" == "s3:s3.amazonaws.com/inprogress/omaclone" ]] \
+  || fail "status --json reverted in-progress s3 repo: $(config_get restic.repo)"
+"$ROOT/scripts/omaclone" location list --json >/dev/null
+[[ "$(config_get transport.backend)" == s3 ]] || fail "location list reverted in-progress s3 to $(config_get transport.backend)"
+[[ "$(config_get restic.repo)" == "s3:s3.amazonaws.com/inprogress/omaclone" ]] \
+  || fail "location list reverted in-progress s3 repo"
+
+# Destination lock also blocks location_sync_active (clone --cron during setup).
+location_sync_active
+[[ "$(config_get transport.backend)" == s3 ]] || fail "sync while locked reverted s3"
+rm -f "$NAS_BACKUP_STATE_DIR/destination.lock"
+location_sync_active
+[[ "$(config_get transport.backend)" == nfs ]] || fail "sync after unlock should restore nas: $(config_get transport.backend)"
+
+# Reset live transport drops NAS leftovers before a new backend setup.
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.uri "10.10.0.10:/export"
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.mountpoint "/mnt/Omaclone-NAS"
+location_reset_live_transport s3
+[[ "$(config_get transport.backend)" == s3 ]] || fail "reset backend"
+[[ -z "$(config_get transport.uri)" ]] || fail "reset left uri"
+[[ -z "$(config_get transport.mountpoint)" ]] || fail "reset left mountpoint"
+[[ -z "$(config_get restic.repo)" ]] || fail "reset left restic.repo"
+[[ -z "$(config_get transport.preset)" ]] || fail "reset left preset"
+
 echo "OK"

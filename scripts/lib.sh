@@ -212,6 +212,18 @@ is_tty() { [[ -t 0 && -t 1 ]]; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# gum steals stdin; sudo then cannot use PAM FIDO and may pop a GUI password
+# dialog that looks like "root password". Bind sudo to /dev/tty instead.
+sudo_tty() {
+  if [[ -e /dev/tty && -r /dev/tty && -w /dev/tty ]] && { [[ -t 0 || -t 1 || -t 2 ]]; }; then
+    sudo "$@" <>/dev/tty 2>/dev/tty
+  elif [[ -t 0 && -t 1 ]]; then
+    sudo "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
 config_py() {
   python3 "$NAS_BACKUP_ROOT/scripts/config.py" "$@"
 }
@@ -991,12 +1003,10 @@ transport_prepare_env() {
   if [[ -s "$NAS_BACKUP_ENVFILE" ]]; then
     NAS_BACKUP_ENV_EXPORTS=$(cat "$NAS_BACKUP_ENVFILE")
   fi
-  _password_unlink "$NAS_BACKUP_ENVFILE"
-  NAS_BACKUP_ENVFILE=""
 }
 
 restic_exec() {
-  local repo
+  local repo extra=() s3region
   repo=$(restic_repo)
   [[ -n "$repo" ]] || die "restic.repo is not set; run: omaclone setup"
   if [[ -z "${NAS_BACKUP_PWFD:-}" ]]; then
@@ -1017,13 +1027,34 @@ restic_exec() {
       fi
       ;;
   esac
+  if [[ "$repo" == s3:* ]]; then
+    s3region=$(config_get transport.region)
+    if [[ -n "$s3region" ]]; then
+      extra+=(-o "s3.region=${s3region}")
+      if [[ "$repo" == s3:s3.amazonaws.com/* ]]; then
+        repo="s3:s3.${s3region}.amazonaws.com/${repo#s3:s3.amazonaws.com/}"
+      fi
+    fi
+    local lookup
+    lookup=$(config_get transport.lookup)
+    if [[ -n "$lookup" ]]; then
+      extra+=(-o "s3.bucket-lookup=${lookup}")
+    fi
+  fi
   (
-    if [[ -n "${NAS_BACKUP_ENV_EXPORTS:-}" ]]; then
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE
+    export AWS_EC2_METADATA_DISABLED=true
+    if [[ -n "${NAS_BACKUP_ENVFILE:-}" && -f "$NAS_BACKUP_ENVFILE" ]]; then
+      set -a
+      # shellcheck disable=SC1090
+      source "$NAS_BACKUP_ENVFILE"
+      set +a
+    elif [[ -n "${NAS_BACKUP_ENV_EXPORTS:-}" ]]; then
       set -a
       eval "$NAS_BACKUP_ENV_EXPORTS"
       set +a
     fi
-    restic --password-file "$NAS_BACKUP_PWFILE" --repo "$repo" "$@"
+    restic --password-file "$NAS_BACKUP_PWFILE" --repo "$repo" "${extra[@]}" "$@"
   )
 }
 
@@ -1372,6 +1403,8 @@ transport_secret_prompt_and_store() {
   require_gum
   local value
   value=$(gum input --password --placeholder "$placeholder" </dev/tty) || return 1
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
   [[ -n "$value" ]] || return 1
   printf '%s' "$value" | transport_secret_put "$attr"
   unset value

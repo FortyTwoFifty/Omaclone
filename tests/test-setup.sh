@@ -23,6 +23,9 @@ printf '%s\n' "$out" | grep -qi "empty" || fail "empty id error should mention e
 [[ "$(location_default_schedule nfs)" == on ]] || fail "nfs should default on"
 [[ "$(location_default_label disk disk cold)" == USB ]] || fail "cold disk label"
 [[ "$(location_default_label nfs nas)" == NAS ]] || fail "nfs label"
+[[ "$(location_default_label s3)" == "Cloud (S3)" ]] || fail "s3 default label: $(location_default_label s3)"
+[[ "$(location_default_label s3 cloud "" aws)" == "AWS S3" ]] || fail "aws s3 label: $(location_default_label s3 cloud "" aws)"
+[[ "$(location_default_label s3 cloud "" r2)" == "Cloudflare R2" ]] || fail "r2 label"
 
 omaclone_test_cfg transport.backend local
 omaclone_test_cfg restic.repo "$HOME/repo"
