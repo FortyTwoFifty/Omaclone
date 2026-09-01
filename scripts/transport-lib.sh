@@ -19,6 +19,18 @@ sudo_noninteractive() {
   fi
 }
 
+# Interactive disk/NFS setup: ask on /dev/tty after gum has taken stdin.
+# Cron and tests (no tty) stay passwordless sudo -n.
+sudo_tty() {
+  if [[ -e /dev/tty && -r /dev/tty && -w /dev/tty ]] && { [[ -t 0 || -t 1 || -t 2 ]]; }; then
+    sudo "$@" <>/dev/tty 2>/dev/tty
+  elif [[ -t 0 && -t 1 ]]; then
+    sudo "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
 mount_wake() {
   local mp="${1:-}"
   [[ -n "$mp" ]] || return 0

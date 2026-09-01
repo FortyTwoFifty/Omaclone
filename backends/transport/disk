@@ -129,7 +129,9 @@ for line in sys.stdin:
   fi
 
   mountpoint=$(cfg transport.mountpoint "")
-  if _disk_is_removable "$rec"; then
+  local removable=0
+  _disk_is_removable "$rec" && removable=1
+  if (( removable )); then
     # USB / hotplug: mount with udisks while cloning. A fixed path is opt-in.
     if have_cmd gum && gum confirm --default=false "Use a fixed mountpoint (always-plugged extra disk)?"; then
       mountpoint=$(gum_input "Mountpoint for this disk" "${mountpoint:-/mnt/omaclone}")
@@ -145,12 +147,26 @@ for line in sys.stdin:
   cfg_set transport.device "$path"
   cfg_set transport.fstype "$fstype"
   cfg_set transport.mountpoint "$mountpoint"
-  if [[ -n "$mountpoint" ]]; then
-    cfg_set transport.mode hot
-    cfg_set restic.repo "${mountpoint%/}/omaclone/repo"
-    sudo mkdir -p "$mountpoint"
-  else
+  # Removable stays cold (timer off, unmount after clone) even with a preferred
+  # path, unless the user installs a systemd mount unit below.
+  if (( removable )) || [[ -z "$mountpoint" ]]; then
     cfg_set transport.mode cold
+  else
+    cfg_set transport.mode hot
+  fi
+  if [[ -n "$mountpoint" ]]; then
+    cfg_set restic.repo "${mountpoint%/}/omaclone/repo"
+  fi
+
+  if ! _disk_attach; then
+    printf '%s\n' "could not mount $path — plug it in, or leave the mountpoint empty to use the desktop (udisks) mount." >&2
+    exit 1
+  fi
+  if [[ -n "$mountpoint" ]] && have_cmd gum && gum confirm --default=false "Install a systemd mount so this disk appears at $mountpoint when plugged in?"; then
+    "$NAS_BACKUP_ROOT/scripts/install-disk-mount.sh" "$uuid" "$mountpoint" "$fstype" || {
+      printf '%s\n' "systemd mount was not installed; clones will still use the live mount." >&2
+    }
+    cfg_set transport.mode hot
   fi
 }
 
@@ -179,40 +195,80 @@ _disk_bind_repo() {
   _disk_own "$repo"
 }
 
-mount() {
-  local uuid mountpoint fstype live_target src opts
+_disk_find_live() {
+  local src="$1" mountpoint="${2:-}" target
+  if [[ -n "$mountpoint" ]]; then
+    target=$(findmnt -n -o TARGET "$mountpoint" 2>/dev/null | head -n 1 || true)
+    if [[ "$target" == "$mountpoint" ]]; then
+      printf '%s\n' "$mountpoint"
+      return 0
+    fi
+  fi
+  findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1 || true
+}
+
+_disk_udisks_mount() {
+  local src="$1"
+  have_cmd udisksctl || return 1
+  udisksctl mount -b "$src" >/dev/null 2>&1
+}
+
+_disk_mount_at() {
+  local src="$1" dest="$2" fstype="$3" opts
+  [[ -n "$dest" ]] || return 1
+  opts=$(_disk_mount_options "$fstype")
+  sudo_tty mkdir -p "$dest" || return 1
+  sudo_tty mount -t "$fstype" -o "$opts" "$src" "$dest"
+}
+
+_disk_attach() {
+  local uuid mountpoint fstype live_target src
   uuid=$(cfg transport.uuid)
   mountpoint=$(cfg transport.mountpoint "")
   fstype=$(cfg transport.fstype auto)
-  [[ -n "$uuid" ]] || { printf '%s\n' "transport.uuid is empty" >&2; exit 1; }
+  [[ -n "$uuid" ]] || { printf '%s\n' "transport.uuid is empty" >&2; return 1; }
 
   src=$(_disk_uuid_src "$uuid")
-  live_target=$(findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1 || true)
+  live_target=$(_disk_find_live "$src" "$mountpoint")
   if [[ -n "$live_target" ]]; then
     _disk_bind_repo "$live_target"
-    exit 0
+    if [[ -n "$mountpoint" && "$live_target" != "$mountpoint" ]]; then
+      printf '%s\n' "disk is mounted at $live_target (requested $mountpoint)" >&2
+    fi
+    return 0
   fi
 
   if [[ ! -e "$src" ]]; then
     printf '%s\n' "backup disk UUID $uuid is not connected" >&2
-    exit 1
+    return 1
   fi
 
   if [[ -n "$mountpoint" ]]; then
-    opts=$(_disk_mount_options "$fstype")
-    sudo_noninteractive mkdir -p "$mountpoint" || exit 1
-    sudo_noninteractive mount -t "$fstype" -o "$opts" "$src" "$mountpoint" || exit 1
+    if ! _disk_mount_at "$src" "$mountpoint" "$fstype"; then
+      printf '%s\n' "could not mount at $mountpoint (sudo mount failed); trying desktop mount" >&2
+      _disk_udisks_mount "$src" || true
+    fi
   elif have_cmd udisksctl; then
-    udisksctl mount -b "$src" >/dev/null 2>&1 || { printf '%s\n' "udisksctl mount failed for $src" >&2; exit 1; }
+    _disk_udisks_mount "$src" || { printf '%s\n' "udisksctl mount failed for $src" >&2; return 1; }
   else
     printf '%s\n' "no mountpoint configured and udisksctl unavailable" >&2
-    exit 1
+    return 1
   fi
 
-  live_target=$(findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1 || true)
-  if [[ -n "$live_target" ]]; then
-    _disk_bind_repo "$live_target"
+  live_target=$(_disk_find_live "$src" "$mountpoint")
+  if [[ -z "$live_target" ]]; then
+    printf '%s\n' "backup disk UUID $uuid is connected but not mounted" >&2
+    return 1
   fi
+  _disk_bind_repo "$live_target"
+  if [[ -n "$mountpoint" && "$live_target" != "$mountpoint" ]]; then
+    printf '%s\n' "using $live_target for clones (could not mount $mountpoint)" >&2
+  fi
+  return 0
+}
+
+mount() {
+  _disk_attach || exit 1
 }
 
 unmount() {

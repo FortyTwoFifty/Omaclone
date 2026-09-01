@@ -224,6 +224,23 @@ got=$(cat "$HOME/identity/marker.txt")
 rm -f "$pwfile"
 echo "PASS: restore round-trip"
 
+# Preferred path: sudo mount to /mnt/external-NVMe may fail; udisks fallback must still ready.
+if findmnt -n -S "/dev/disk/by-uuid/$LIVE_UUID" >/dev/null 2>&1; then
+  nas_backup_backend_run transport disk unmount 2>/dev/null || true
+fi
+omaclone_test_cfg transport.mountpoint "/mnt/external-NVMe"
+set +e
+nas_backup_backend_run transport disk mount >/tmp/omaclone-disk-live-pref.$$ 2>&1
+pref_rc=$?
+set -e
+nas_backup_backend_run transport disk ready \
+  || { cat /tmp/omaclone-disk-live-pref.$$; fail "preferred mountpoint must still attach (udisks fallback)"; }
+(( pref_rc == 0 )) || { cat /tmp/omaclone-disk-live-pref.$$; fail "preferred mountpoint attach rc=$pref_rc"; }
+live_mp=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$LIVE_UUID" | head -n1 || true)
+assert_media "$live_mp"
+rm -f /tmp/omaclone-disk-live-pref.$$
+echo "PASS: preferred /mnt/external-NVMe attach (live=$live_mp)"
+
 # 7. Cron skip when UUID is missing
 omaclone_test_cfg transport.uuid "DEAD-BEEF-NOT-A-DISK"
 omaclone_test_cfg locations.usb-live.uuid "DEAD-BEEF-NOT-A-DISK"

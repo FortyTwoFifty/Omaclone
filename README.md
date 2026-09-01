@@ -195,7 +195,7 @@ A longer walkthrough is in [RESTORE.md](RESTORE.md).
 
 Vendor names are wizard hints, not separate backends. Synology does not need a DSM API: SMB or SFTP is enough.
 
-**Cold USB:** plug it in. Setup mounts it with `udisksctl` (no sudo, no fixed path) and puts the restic repo in `omaclone/` on that volume — existing files stay. If it is unplugged when the daily timer fires, the clone is skipped and you get a notification — not a hard failure. Always-plugged extra disks can opt into a fixed mountpoint and the daily timer.
+**Cold USB:** plug it in. Setup mounts it with `udisksctl` (no sudo, no fixed path) and puts the restic repo in `omaclone/` on that volume — existing files stay. A preferred path (for example `/mnt/external-NVMe`) is attempted with sudo; if that fails, the desktop mount is used and setup still finishes. If it is unplugged when the daily timer fires, the clone is skipped and you get a notification — not a hard failure. Always-plugged extra disks can install a systemd mount and the daily timer.
 
 **S3** cannot ship a runnable `./restore` file. Recovery is `omarchy plugin add` then the plugin-tree `omaclone restore`. Access keys live in the keyring, never in `config.toml`.
 

@@ -247,25 +247,41 @@ _setup_reenter_transport_secrets() {
 }
 
 _setup_ensure_transport() {
-  local backend picked
+  local backend picked err keys
   backend=$(config_get transport.backend)
   [[ -n "$backend" ]] || die "no transport configured; run: omaclone setup"
   while true; do
     if nas_backup_backend_run transport "$backend" ready; then
       return 0
     fi
-    nas_backup_backend_run transport "$backend" mount 2>/dev/null || true
+    err=$(mktemp -p "${TMPDIR:-/tmp}" omaclone.mount.XXXXXX)
+    set +e
+    nas_backup_backend_run transport "$backend" mount >"$err" 2>&1
+    set -e
     if nas_backup_backend_run transport "$backend" ready; then
+      rm -f "$err"
       return 0
     fi
+    if [[ -s "$err" ]]; then
+      tui_error "$(tr '\n' ' ' <"$err" | cut -c1-400)"
+    fi
+    rm -f "$err"
     if ! is_tty || ! have gum; then
       die "transport '$backend' is not ready"
     fi
-    picked=$(printf '%s\n' \
-      "Retry connecting" \
-      "Re-enter destination passwords / keys" \
-      "Continue later" \
-      | gum choose --header="Clone location is not ready") || return 1
+    keys=$(nas_backup_backend_run transport "$backend" credential-keys 2>/dev/null || true)
+    if [[ -n "${keys//[$'\n' ]/}" ]]; then
+      picked=$(printf '%s\n' \
+        "Retry connecting" \
+        "Re-enter destination passwords / keys" \
+        "Continue later" \
+        | gum choose --header="Clone location is not ready") || return 1
+    else
+      picked=$(printf '%s\n' \
+        "Retry connecting" \
+        "Continue later" \
+        | gum choose --header="Clone location is not ready") || return 1
+    fi
     case "$picked" in
       Retry*) continue ;;
       Re-enter*)

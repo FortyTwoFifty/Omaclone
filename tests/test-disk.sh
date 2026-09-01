@@ -66,15 +66,18 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 source "$ROOT/scripts/lib.sh"
 source "$ROOT/scripts/transport-lib.sh"
 
-grep -q 'cfg_set transport.mode hot' "$ROOT/backends/transport/disk" || fail "setup should set mode=hot when mountpoint is set"
-grep -q 'cfg_set transport.mode cold' "$ROOT/backends/transport/disk" || fail "setup should set mode=cold for desktop/USB mounts"
+grep -q 'cfg_set transport.mode hot' "$ROOT/backends/transport/disk" || fail "setup should set mode=hot for internal extra disks"
+grep -q 'cfg_set transport.mode cold' "$ROOT/backends/transport/disk" || fail "setup should set mode=cold for USB/desktop mounts"
 echo "PASS: setup sets transport.mode hot/cold"
 
 grep -q 'mkfs.ext4 -F -L omaclone' "$ROOT/backends/transport/disk" && fail "_format_device should not hardcode omaclone label"
 echo "PASS: _format_device does not hardcode label"
 
-grep -q 'install-disk-mount.sh' "$ROOT/backends/transport/disk" && fail "setup should not call install-disk-mount.sh"
-echo "PASS: no systemd mount install in setup"
+grep -q 'install-disk-mount.sh' "$ROOT/backends/transport/disk" \
+  || fail "setup may install a systemd mount after confirmation"
+grep -q 'Install a systemd mount' "$ROOT/backends/transport/disk" \
+  || fail "systemd extra-disk mount must be opt-in"
+echo "PASS: systemd extra-disk mount is opt-in"
 grep -q 'nosuid,nodev,noexec' "$ROOT/scripts/install-disk-mount.sh" \
   || fail "disk systemd mount should be nosuid,nodev,noexec"
 echo "PASS: disk mount options include nosuid,nodev,noexec"
@@ -87,7 +90,11 @@ echo "PASS: bootstrap-install prefers live TARGET"
 
 grep -q 'gum confirm --default=false' "$ROOT/backends/transport/disk" \
   || fail "USB/hotplug setup should default to no fixed mountpoint"
-echo "PASS: removable disks default to cold/udisks"
+grep -q 'sudo_tty' "$ROOT/backends/transport/disk" \
+  || fail "preferred-path mounts should use sudo_tty so gum does not steal the sudo prompt"
+grep 'transport "$backend" mount 2>/dev/null' "$ROOT/scripts/cmd-setup.sh" \
+  && fail "setup must not hide transport mount errors"
+echo "PASS: removable disks default to cold/udisks; mount errors are visible"
 
 grep -q 'uid=$(command id -u),gid=$(command id -g)' "$ROOT/backends/transport/disk" \
   || fail "FAT/exFAT hot mounts should set uid/gid (command id; id() is the backend verb)"
@@ -269,5 +276,28 @@ grep -q "uid=$(id -u),gid=$(id -g)" "$MOUNT_LOG" \
 grep -q "nosuid,nodev,noexec" "$MOUNT_LOG" \
   || fail "hot mount should keep nosuid,nodev,noexec: $(cat "$MOUNT_LOG")"
 echo "PASS: hot exfat mount passes uid/gid and nosuid,nodev,noexec"
+
+# Preferred path: sudo mount fails → udisks fallback, still ready
+cat >"$MOCK_BIN/sudo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "sudo $*" >> "${MOUNT_LOG}"
+exit 1
+EOF
+chmod +x "$MOCK_BIN/sudo"
+: > "$UDISKSCTL_ACTION"
+: > "$MOUNT_LOG"
+echo "" > "$TEST_MOUNTS_FILE"
+cfg_set transport.mountpoint "$preferred_mp"
+cfg_set transport.fstype exfat
+"$ROOT/backends/transport/disk" mount >/dev/null 2>"$NAS_BACKUP_USER_CONFIG_DIR/mount.err"
+got=$(python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" get restic.repo)
+[[ "$got" == "$fake_live/omaclone/repo" ]] \
+  || fail "sudo failure should fall back to udisks repo, got $got"
+grep -q 'mount -b' "$UDISKSCTL_ACTION" \
+  || fail "fallback should call udisksctl: $(cat "$UDISKSCTL_ACTION")"
+grep -qi 'trying desktop mount' "$NAS_BACKUP_USER_CONFIG_DIR/mount.err" \
+  || fail "fallback should explain sudo mount failed: $(cat "$NAS_BACKUP_USER_CONFIG_DIR/mount.err")"
+echo "PASS: preferred mountpoint falls back to udisks when sudo mount fails"
 
 echo "OK"

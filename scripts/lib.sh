@@ -500,7 +500,7 @@ restic_local_repo_path() {
   fi
   uuid=$(config_get transport.uuid)
   [[ -n "$uuid" && -e "/dev/disk/by-uuid/$uuid" ]] || return 1
-  live=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1)
+  live=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1 || true)
   [[ -n "$live" ]] || return 1
   mp=$(config_get transport.mountpoint)
   repo=$(map_restic_repo_onto_mount "$repo" "$mp" "$live") || return 1
@@ -966,7 +966,7 @@ restic_repo() {
     printf '%s\n' "$repo"
     return 0
   fi
-  live=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1)
+  live=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1 || true)
   if [[ -n "$live" ]]; then
     mp=$(config_get transport.mountpoint "")
     repo=$(map_restic_repo_onto_mount "$repo" "$mp" "$live") || { printf '%s\n' "$repo"; return 0; }
