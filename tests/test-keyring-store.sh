@@ -59,6 +59,7 @@ PY
 
 python3 - "$STORE" <<'PY' || fail "normalize_secret / default-collection unit tests"
 import importlib.util
+import os
 import sys
 spec = importlib.util.spec_from_file_location("keyring_store", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
@@ -140,6 +141,22 @@ assert mod._is_default_collection(
     object(),
 ), "collection aliased as default must be refused"
 print("normalize/default-collection ok")
+
+os.environ["OMACLONE_KEYRING_INTERACTIVE"] = "1"
+assert mod._is_interactive() is True
+os.environ["OMACLONE_KEYRING_INTERACTIVE"] = "0"
+assert mod._is_interactive() is False
+os.environ["OMACLONE_KEYRING_TIMEOUT"] = "2.5"
+assert mod._timeout_seconds() == 2.5
+del os.environ["OMACLONE_KEYRING_TIMEOUT"]
+assert mod._timeout_seconds(interactive=True) == 60.0
+assert mod._timeout_seconds(interactive=False) == 3.0
+del os.environ["OMACLONE_KEYRING_INTERACTIVE"]
+print("timeout/interactive ok")
+assert callable(mod._tty_keyring_password)
+assert callable(mod._ensure_gcr_prompter)
+assert callable(mod._unlock_with_master_password)
+print("unlock helpers exist")
 PY
 
 if printf 'line1\nline2' | python3 "$STORE" put restic-password >/tmp/omaclone-keyring-test.err 2>&1; then
@@ -228,6 +245,8 @@ if ((${#DEFAULT_FILES[@]} > 0)); then
   else
     if grep -q 'collection is missing' /tmp/omaclone-keyring-isolation.err; then
       echo "SKIP: omaclone collection not created; isolation test needs setup"
+    elif grep -qi 'keyring is locked' /tmp/omaclone-keyring-isolation.err; then
+      echo "SKIP: omaclone collection is locked; isolation test needs an unlocked keyring"
     else
       cat /tmp/omaclone-keyring-isolation.err >&2
       fail "put to omaclone collection failed"

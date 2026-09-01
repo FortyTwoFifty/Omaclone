@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
+import time
 from typing import Any
 
 SCHEMA_NAME = "org.omaclone.Secret"
@@ -125,10 +127,14 @@ def _schema(Secret: Any, name: str) -> Any:
 
 
 def _service(Secret: Any) -> Any:
-    return Secret.Service.get_sync(
-        Secret.ServiceFlags.OPEN_SESSION | Secret.ServiceFlags.LOAD_COLLECTIONS,
-        None,
-    )
+    cancellable = _cancellable(_timeout_seconds())
+    try:
+        return Secret.Service.get_sync(
+            Secret.ServiceFlags.OPEN_SESSION | Secret.ServiceFlags.LOAD_COLLECTIONS,
+            cancellable,
+        )
+    except Exception as exc:
+        raise _cancelled_error(cancellable, exc, "connecting to GNOME Keyring") from exc
 
 
 def _collection_label() -> str:
@@ -145,7 +151,74 @@ def _allow_create() -> bool:
         return True
     if flag == "0":
         return False
-    return sys.stdin.isatty() or sys.stderr.isatty()
+    return _is_interactive()
+
+
+def _is_interactive() -> bool:
+    flag = os.environ.get("OMACLONE_KEYRING_INTERACTIVE")
+    if flag == "1":
+        return True
+    if flag == "0":
+        return False
+    try:
+        if sys.stderr.isatty() or sys.stdin.isatty():
+            return True
+    except Exception:
+        pass
+    try:
+        return os.isatty(2) or os.isatty(0)
+    except Exception:
+        return False
+
+
+def _timeout_seconds(*, interactive: bool | None = None) -> float:
+    raw = os.environ.get("OMACLONE_KEYRING_TIMEOUT")
+    if raw:
+        try:
+            return max(0.1, float(raw))
+        except ValueError:
+            pass
+    if interactive is None:
+        interactive = _is_interactive()
+    return 60.0 if interactive else 3.0
+
+
+def _cancellable(seconds: float | None = None) -> Any:
+    import gi
+
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio
+
+    cancellable = Gio.Cancellable()
+    if seconds is None:
+        seconds = _timeout_seconds()
+    if seconds <= 0:
+        return cancellable
+
+    def _cancel() -> None:
+        time.sleep(seconds)
+        try:
+            cancellable.cancel()
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=_cancel, daemon=True, name="omaclone-keyring-timeout"
+    ).start()
+    return cancellable
+
+
+def _cancelled_error(cancellable: Any, exc: Exception, what: str) -> Exception:
+    try:
+        cancelled = bool(cancellable is not None and cancellable.is_cancelled())
+    except Exception:
+        cancelled = False
+    if cancelled:
+        return RuntimeError(
+            f"Timed out {what}. If a keyring password dialog is open, it may "
+            "be behind this window — dismiss or complete it, then retry."
+        )
+    return exc
 
 
 def _collection_path(collection: Any) -> str:
@@ -207,17 +280,165 @@ def find_collection(Secret: Any, svc: Any) -> Any | None:
                 return collection
         return None
     want = _collection_label()
+    locked = None
     for collection in collections:
-        if collection.get_label() == want and not _is_default_collection(
-            collection, Secret, svc
-        ):
+        if collection.get_label() != want:
+            continue
+        if _is_default_collection(collection, Secret, svc):
+            continue
+        if not collection.get_locked():
             return collection
-    return None
+        if locked is None:
+            locked = collection
+    return locked
 
 
-def unlock_collection(svc: Any, collection: Any) -> None:
-    if collection.get_locked():
-        svc.unlock_sync([collection], None)
+def _ensure_gcr_prompter() -> None:
+    """Hyprland does not dbus-activate gcr-prompter with WAYLAND_DISPLAY, so
+    Secret Service unlock dialogs never appear. Start it in this session."""
+    path = "/usr/lib/gcr-prompter"
+    if not os.path.isfile(path):
+        return
+    try:
+        subprocess.check_output(["pgrep", "-x", "gcr-prompter"], stderr=subprocess.DEVNULL)
+        return
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    try:
+        subprocess.Popen(
+            [path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=os.environ.copy(),
+        )
+    except OSError:
+        return
+    time.sleep(0.4)
+
+
+def _open_plain_session(conn: Any) -> str:
+    from gi.repository import Gio, GLib
+
+    result = conn.call_sync(
+        "org.freedesktop.secrets",
+        "/org/freedesktop/secrets",
+        "org.freedesktop.Secret.Service",
+        "OpenSession",
+        GLib.Variant("(sv)", ("plain", GLib.Variant("s", ""))),
+        GLib.VariantType("(vo)"),
+        Gio.DBusCallFlags.NONE,
+        5000,
+        None,
+    )
+    return str(result.unpack()[1])
+
+
+def _plain_master_args(conn: Any, collection_path: str, password: str) -> Any:
+    """Secret struct for Unlock/CreateWithMasterPassword: plain session + raw bytes."""
+    from gi.repository import GLib
+
+    session_path = _open_plain_session(conn)
+    return GLib.Variant(
+        "(o(oayays))",
+        (
+            collection_path,
+            (session_path, b"", password.encode("utf-8"), "text/plain"),
+        ),
+    )
+
+
+def _unlock_with_master_password(svc: Any, collection: Any, password: str) -> None:
+    """Unlock without a GUI prompt via gnome-keyring's private D-Bus API."""
+    from gi.repository import Gio
+
+    conn = svc.get_connection()
+    args = _plain_master_args(conn, collection.get_object_path(), password)
+    conn.call_sync(
+        "org.freedesktop.secrets",
+        "/org/freedesktop/secrets",
+        "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface",
+        "UnlockWithMasterPassword",
+        args,
+        None,
+        Gio.DBusCallFlags.NONE,
+        15000,
+        None,
+    )
+
+
+def _tty_keyring_password() -> str:
+    import getpass
+
+    sys.stderr.write(
+        "\nThe Omaclone secret store is locked.\n"
+        "This is the GNOME Keyring *collection* password (if a dialog asked you\n"
+        "to protect the Omaclone keyring). It is NOT:\n"
+        "  • sudo / root\n"
+        "  • your FIDO/security key\n"
+        "  • the restic repository password (a different secret, unless you\n"
+        "    deliberately reused the same string)\n"
+        "If you never saw a keyring-password dialog, press Enter (empty) or\n"
+        "recreate the store with: omaclone setup secrets\n\n"
+    )
+    sys.stderr.flush()
+    try:
+        return getpass.getpass("Omaclone keyring password: ")
+    except (EOFError, OSError):
+        return ""
+
+
+def unlock_collection(
+    svc: Any, collection: Any, *, interactive: bool | None = None
+) -> None:
+    if not collection.get_locked():
+        return
+    if interactive is None:
+        interactive = _is_interactive()
+    if not interactive:
+        raise RuntimeError(
+            "Omaclone keyring is locked. Unlock it from a terminal "
+            "(omaclone location add / omaclone setup). FIDO cannot unlock it."
+        )
+    _ensure_gcr_prompter()
+    password = _tty_keyring_password()
+    try:
+        _unlock_with_master_password(svc, collection, password)
+        try:
+            svc.load_collections_sync()
+        except Exception:
+            pass
+        if not collection.get_locked():
+            return
+        found = find_collection(_gi_secret(), svc)
+        if found is not None and not found.get_locked():
+            return
+    except Exception as exc:
+        err = str(exc)
+        if "Denied" in err or "invalid" in err.lower():
+            print(
+                "That password did not unlock the Omaclone keyring.\n"
+                "The restic repository password is a different secret than this "
+                "keyring, unless you deliberately reused the same string.\n"
+                "Retry, press Enter if the keyring password was empty, or run: "
+                "omaclone setup secrets",
+                file=sys.stderr,
+            )
+        else:
+            print(f"That password did not unlock the Omaclone keyring: {exc}", file=sys.stderr)
+    print(
+        "Falling back to a desktop unlock dialog. If none appears, gcr-prompter "
+        "could not show a window on this compositor.",
+        file=sys.stderr,
+        flush=True,
+    )
+    cancellable = _cancellable(_timeout_seconds(interactive=True))
+    try:
+        svc.unlock_sync([collection], cancellable)
+    except Exception as exc:
+        raise _cancelled_error(
+            cancellable, exc, "waiting for the keyring unlock dialog"
+        ) from exc
 
 
 def ensure_collection(Secret: Any, svc: Any, *, create: bool) -> Any:
@@ -238,13 +459,25 @@ def ensure_collection(Secret: Any, svc: Any, *, create: bool) -> Any:
         )
     # May prompt: that is how GNOME Keyring encrypts a new collection at rest.
     # Never pass alias=default/login — that would return the desktop keyring.
-    collection = Secret.Collection.create_sync(
-        svc,
-        label,
-        None,
-        Secret.CollectionCreateFlags.NONE,
-        None,
+    print(
+        "Create or unlock the Omaclone keyring if a password dialog appears "
+        "(it may be behind this window).",
+        file=sys.stderr,
+        flush=True,
     )
+    cancellable = _cancellable(_timeout_seconds(interactive=True))
+    try:
+        collection = Secret.Collection.create_sync(
+            svc,
+            label,
+            None,
+            Secret.CollectionCreateFlags.NONE,
+            cancellable,
+        )
+    except Exception as exc:
+        raise _cancelled_error(
+            cancellable, exc, "creating the Omaclone keyring collection"
+        ) from exc
     if collection is None or _is_default_collection(collection, Secret, svc):
         raise RuntimeError("refusing to use the default GNOME keyring collection")
     unlock_collection(svc, collection)
@@ -266,28 +499,42 @@ def store_item(
     if _is_default_collection(collection, Secret, svc):
         raise RuntimeError("refusing to write to the default GNOME keyring collection")
     value = Secret.Value.new(secret, -1, "text/plain")
-    Secret.Item.create_sync(
-        collection,
-        _schema(Secret, SCHEMA_NAME),
-        _attrs(attribute),
-        label,
-        value,
-        Secret.ItemCreateFlags.REPLACE,
-        None,
-    )
+    cancellable = _cancellable(_timeout_seconds())
+    try:
+        Secret.Item.create_sync(
+            collection,
+            _schema(Secret, SCHEMA_NAME),
+            _attrs(attribute),
+            label,
+            value,
+            Secret.ItemCreateFlags.REPLACE,
+            cancellable,
+        )
+    except Exception as exc:
+        raise _cancelled_error(
+            cancellable, exc, "storing a secret in the Omaclone keyring"
+        ) from exc
 
 
 def lookup_in_collection(Secret: Any, collection: Any, attribute: str) -> str | None:
     if collection is None:
         return None
-    flags = Secret.SearchFlags.UNLOCK | Secret.SearchFlags.LOAD_SECRETS
+    flags = Secret.SearchFlags.LOAD_SECRETS
+    if _is_interactive():
+        flags = Secret.SearchFlags.UNLOCK | Secret.SearchFlags.LOAD_SECRETS
+    cancellable = _cancellable(_timeout_seconds())
     for schema_name in (SCHEMA_NAME, LEGACY_SCHEMA_NAME):
-        items = collection.search_sync(
-            _schema(Secret, schema_name),
-            _attrs(attribute),
-            flags,
-            None,
-        )
+        try:
+            items = collection.search_sync(
+                _schema(Secret, schema_name),
+                _attrs(attribute),
+                flags,
+                cancellable,
+            )
+        except Exception as exc:
+            raise _cancelled_error(
+                cancellable, exc, "reading the Omaclone keyring"
+            ) from exc
         for item in items or []:
             value = item.get_secret()
             if value is None:
@@ -323,6 +570,61 @@ def _which(name: str) -> str | None:
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return None
+
+
+def cmd_recreate() -> int:
+    """Create a new Omaclone collection with the password from stdin (may be empty).
+
+    Used when the old collection is locked and the password is unknown.
+    Does not delete the locked collection; find_collection prefers unlocked.
+    """
+    raw = sys.stdin.buffer.read().rstrip(b"\r\n")
+    try:
+        password = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return _die(str(exc))
+    if _file_store_dir() is not None:
+        try:
+            os.makedirs(_file_store_dir() or "", mode=0o700, exist_ok=True)
+        except OSError as exc:
+            return _die(str(exc))
+        return 0
+    try:
+        from gi.repository import Gio, GLib
+
+        Secret = _gi_secret()
+        svc = _service(Secret)
+        conn = svc.get_connection()
+        session_path = _open_plain_session(conn)
+        args = GLib.Variant(
+            "(a{sv}(oayays))",
+            (
+                {
+                    "org.freedesktop.Secret.Collection.Label": GLib.Variant(
+                        "s", _collection_label()
+                    )
+                },
+                (session_path, b"", password.encode("utf-8"), "text/plain"),
+            ),
+        )
+        conn.call_sync(
+            "org.freedesktop.secrets",
+            "/org/freedesktop/secrets",
+            "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface",
+            "CreateWithMasterPassword",
+            args,
+            GLib.VariantType("(o)"),
+            Gio.DBusCallFlags.NONE,
+            15000,
+            None,
+        )
+        svc.load_collections_sync()
+        collection = find_collection(Secret, svc)
+        if collection is None or collection.get_locked():
+            return _die("recreate did not leave an unlocked Omaclone collection")
+    except Exception as exc:
+        return _die(str(exc))
+    return 0
 
 
 def cmd_available() -> int:
@@ -425,15 +727,23 @@ def cmd_delete(attribute: str) -> int:
         collection = find_collection(Secret, svc)
         if collection is None:
             return 0
-        flags = Secret.SearchFlags.UNLOCK
-        items = collection.search_sync(
-            _schema(Secret, SCHEMA_NAME),
-            _attrs(attribute),
-            flags,
-            None,
-        )
+        flags = getattr(Secret.SearchFlags, "NONE", 0)
+        if _is_interactive():
+            flags = Secret.SearchFlags.UNLOCK
+        cancellable = _cancellable(_timeout_seconds())
+        try:
+            items = collection.search_sync(
+                _schema(Secret, SCHEMA_NAME),
+                _attrs(attribute),
+                flags,
+                cancellable,
+            )
+        except Exception as exc:
+            raise _cancelled_error(
+                cancellable, exc, "searching the Omaclone keyring"
+            ) from exc
         for item in items or []:
-            item.delete_sync(None)
+            item.delete_sync(cancellable)
     except Exception as exc:
         return _die(str(exc))
     return 0
@@ -442,7 +752,7 @@ def cmd_delete(attribute: str) -> int:
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         return _die(
-            "usage: keyring_store.py available|ensure|get ATTRIBUTE|"
+            "usage: keyring_store.py available|ensure|recreate|get ATTRIBUTE|"
             "put ATTRIBUTE [--label LABEL]|delete ATTRIBUTE"
         )
     cmd = argv[1]
@@ -450,6 +760,8 @@ def main(argv: list[str]) -> int:
         return cmd_available()
     if cmd == "ensure":
         return cmd_ensure()
+    if cmd == "recreate":
+        return cmd_recreate()
     if cmd == "get":
         if len(argv) != 3:
             return _die("usage: keyring_store.py get ATTRIBUTE")
