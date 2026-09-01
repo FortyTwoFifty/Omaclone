@@ -46,11 +46,12 @@ run_one() {
   printf '==> %s\n' "$name"
   start=$(date +%s)
   set +e
+  # Invoke via the interpreter so a missing git +x bit cannot fail CI with rc=126.
   if [[ "$name" == *.js ]]; then
     node "./$name"
     rc=$?
   else
-    "./$name"
+    bash "./$name"
     rc=$?
   fi
   set -e

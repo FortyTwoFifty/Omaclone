@@ -23,6 +23,13 @@ for f in "${files[@]}"; do
   bash -n "$f" || fail "bash -n $f"
 done
 
+# run.sh used to exec ./tests/foo.sh; a 100644 git mode then fails CI with
+# "Permission denied" (rc=126). Keep the bits set so README's ./tests/*.sh works.
+for t in "$ROOT"/tests/test-*.sh "$ROOT"/tests/run.sh "$ROOT"/tests/helpers.sh; do
+  [[ -f "$t" ]] || continue
+  [[ -x "$t" ]] || fail "$(basename "$t") is not executable (git update-index --chmod=+x tests/$(basename "$t"))"
+done
+
 python3 -m py_compile "$ROOT"/scripts/*.py "$ROOT"/tests/s3_create_bucket.py || fail "py_compile failed"
 
 "$ROOT/scripts/omaclone" -h | grep -q verify || fail "usage missing verify"
