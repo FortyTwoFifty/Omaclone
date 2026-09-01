@@ -10,8 +10,18 @@ nas_backup_backend_dirs() {
   printf '%s\n' "$NAS_BACKUP_USER_BACKENDS/$kind" "$NAS_BACKUP_ROOT/backends/$kind"
 }
 
+nas_backup_backend_name_ok() {
+  local name="$1"
+  [[ -n "$name" ]] || return 1
+  [[ "$name" == */* || "$name" == *\\* || "$name" == *..* ]] && return 1
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  [[ "$name" == .* ]] && return 1
+  return 0
+}
+
 nas_backup_backend_find() {
   local kind="$1" name="$2" dir
+  nas_backup_backend_name_ok "$name" || return 1
   for dir in $(nas_backup_backend_dirs "$kind"); do
     if [[ -x "$dir/$name" ]]; then
       printf '%s\n' "$dir/$name"

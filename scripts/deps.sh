@@ -61,6 +61,7 @@ deps_curl_install() {
   local cmd="$2"
 
   echo "The $label installer will be downloaded and executed." >&2
+  echo "This download is not checksum-pinned; prefer installing $label yourself from the vendor if you can." >&2
   echo "Command: $cmd" >&2
   if ! gum confirm "Allow this?"; then
     return 1

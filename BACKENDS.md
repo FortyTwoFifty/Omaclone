@@ -19,7 +19,7 @@ The setup wizard lists **all** shipped backends; unavailable ones are labeled `[
 | `describe` | One line for `gum choose` |
 | `available` | 0 if the CLI is installed |
 | `setup` | Write non-secret keys into `$NAS_BACKUP_CONFIG` via `scripts/config.py`. Do not print the password. |
-| `get` | Print **only** the restic password on stdout. The core redirects this onto a `600` tmpfs file and unlinks it after restic exits. |
+| `get` | Print **only** the restic password on stdout. The core writes that onto a `600` tmpfs file, then unlinks it and passes restic `/dev/fd/N` so the secret is not a named file in `ps`. |
 | `put` | Optional. Read the password from stdin and store it. `prompt` must not implement this. |
 | `unlock` | Optional. Interactive sign-in for the password manager. Not a secret. Attach stdio to /dev/tty. Exit 2 if unsupported. |
 | `install` | Optional. Install missing CLI dependencies (e.g., pacman for libsecret, curl zip for `op`). Exit 0 if already available or no install needed. Called by the wizard before `setup`. |

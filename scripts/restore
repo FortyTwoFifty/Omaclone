@@ -21,27 +21,8 @@ fi
 
 _kit_hash_ok() {
   local sums="$here/SHA256SUMS"
-  [[ -f "$sums" ]] || return 0
-  python3 - "$sums" "$ROOT" <<'PY'
-import hashlib, sys
-from pathlib import Path
-sums, root = Path(sys.argv[1]), Path(sys.argv[2])
-for line in sums.read_text(encoding="utf-8").splitlines():
-    line = line.strip()
-    if not line or line.startswith("#"):
-        continue
-    parts = line.split()
-    if len(parts) < 2:
-        continue
-    want, rel = parts[0], parts[-1]
-    path = root / rel
-    if not path.is_file():
-        sys.exit(1)
-    got = hashlib.sha256(path.read_bytes()).hexdigest()
-    if got != want:
-        sys.exit(1)
-sys.exit(0)
-PY
+  [[ -f "$sums" ]] || return 1
+  python3 "$ROOT/scripts/bootstrap_copy.py" --verify "$sums" "$ROOT"
 }
 
 if [[ "$ROOT" != "$plugin" && "${OMACLONE_ALLOW_UNTRUSTED_KIT:-}" != 1 ]]; then
@@ -71,11 +52,10 @@ if [[ -n "${NAS_BACKUP_CONFIG:-}" && -f "$NAS_BACKUP_CONFIG" ]]; then
 fi
 
 case "$transport" in
-  nfs|"") need_pkgs+=(nfs-utils) ;;
+  nfs) need_pkgs+=(nfs-utils) ;;
   cifs) need_pkgs+=(cifs-utils) ;;
   sftp) need_pkgs+=(openssh) ;;
-  s3) ;;
-  disk|local) ;;
+  s3|disk|local|"") ;;
 esac
 
 missing=()
@@ -83,7 +63,7 @@ for p in restic jq gum rsync; do
   command -v "$p" >/dev/null 2>&1 || missing+=("$p")
 done
 case "$transport" in
-  nfs|"")
+  nfs)
     command -v mount.nfs4 >/dev/null 2>&1 || command -v mount.nfs >/dev/null 2>&1 || missing+=(nfs-utils)
     ;;
   cifs)

@@ -47,6 +47,19 @@ omaclone_install_dummy_secrets() {
   omaclone_install_user_backend secrets dummy "$NAS_BACKUP_ROOT/tests/backends/secrets/dummy"
 }
 
+omaclone_test_file_keyring() {
+  local dir="${1:-$OMACLONE_TEST_HOME/.omaclone-keyring}"
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  export OMACLONE_KEYRING_FILE="$dir"
+}
+
+omaclone_test_put_transport_secret() {
+  local attr="$1" value="$2"
+  [[ -n "${OMACLONE_KEYRING_FILE:-}" ]] || fail "omaclone_test_file_keyring was not called"
+  printf '%s' "$value" | python3 "$NAS_BACKUP_ROOT/scripts/keyring_store.py" put "$attr"
+}
+
 omaclone_cli() {
   # Unattended: close stdin so password_load / gum never wait on a TTY.
   "$NAS_BACKUP_ROOT/scripts/omaclone" "$@" </dev/null

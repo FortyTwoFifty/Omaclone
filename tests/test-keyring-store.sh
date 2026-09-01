@@ -147,6 +147,26 @@ if printf 'line1\nline2' | python3 "$STORE" put restic-password >/tmp/omaclone-k
 fi
 grep -q newline /tmp/omaclone-keyring-test.err || fail "multiline put should mention newline"
 
+# File store (test-only, no libsecret).
+FILEKR=$(mktemp -d)
+export OMACLONE_KEYRING_FILE="$FILEKR"
+python3 "$STORE" available || fail "file store available should succeed"
+python3 "$STORE" ensure || fail "file store ensure should succeed"
+printf '%s' "file-store-secret" | python3 "$STORE" put s3-access-key --label "omaclone s3-access-key"
+got=$(python3 "$STORE" get s3-access-key)
+[[ "$got" == "file-store-secret" ]] || fail "file store get: $got"
+mode=$(stat -c %a "$FILEKR/s3-access-key")
+[[ "$mode" == 600 ]] || fail "file store secret mode $mode"
+if printf 'line1\nline2' | python3 "$STORE" put s3-secret-key >/tmp/omaclone-keyring-file.err 2>&1; then
+  fail "file store must still reject newlines"
+fi
+python3 "$STORE" delete s3-access-key
+if python3 "$STORE" get s3-access-key >/dev/null 2>&1; then
+  fail "file store delete did not remove s3-access-key"
+fi
+unset OMACLONE_KEYRING_FILE
+rm -rf "$FILEKR"
+
 # A fake secret-tool store/clear/delete must never be invoked on put/get/delete.
 FAKE=$(mktemp -d)
 trap 'rm -rf "$FAKE"' EXIT

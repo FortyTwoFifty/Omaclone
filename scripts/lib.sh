@@ -193,7 +193,10 @@ fi
 NAS_BACKUP_CONFIG="${NAS_BACKUP_CONFIG:-${OMACLONE_CONFIG:-$NAS_BACKUP_USER_CONFIG_DIR/config.toml}}"
 NAS_BACKUP_STAGING="$NAS_BACKUP_STATE_DIR/staging"
 NAS_BACKUP_PWFILE=""
-NAS_BACKUP_ENVFILE=""
+NAS_BACKUP_PWFD=""
+# Inherit if the caller exported a tmpfs env file for pre-restic (S3 AWS_*).
+NAS_BACKUP_ENVFILE="${NAS_BACKUP_ENVFILE:-}"
+NAS_BACKUP_ENV_EXPORTS=""
 
 OMACLONE_ROOT="$NAS_BACKUP_ROOT"
 OMACLONE_USER_CONFIG_DIR="$NAS_BACKUP_USER_CONFIG_DIR"
@@ -562,27 +565,65 @@ Then: touch $dir/.write-test  (should succeed) and re-run setup.
 EOF
 }
 
+_password_unlink() {
+  local f="$1"
+  [[ -n "$f" && "$f" != /dev/fd/* && -e "$f" ]] || return 0
+  rm -f "$f"
+}
+
+password_sweep_stale() {
+  local dir f base
+  local uid="${UID:-$(id -u)}"
+  for dir in /dev/shm "/run/user/$uid"; do
+    [[ -d "$dir" && -w "$dir" ]] || continue
+    for f in "$dir"/omaclone.pw.* "$dir"/omaclone.env.* "$dir"/omaclone.smb.* \
+             "$dir"/omaclone.err.* "$dir"/omaclone.restic.* "$dir"/omaclone.*; do
+      [[ -f "$f" ]] || continue
+      [[ -O "$f" ]] || continue
+      base=$(basename "$f")
+      case "$base" in
+        omaclone.pw.*|omaclone.env.*|omaclone.smb.*|omaclone.err.*|omaclone.restic.*) ;;
+        omaclone.??????) ;;
+        *) continue ;;
+      esac
+      rm -f "$f" 2>/dev/null || true
+    done
+  done
+}
+
+_password_seal() {
+  local path="${NAS_BACKUP_PWFILE:-}"
+  [[ -n "$path" && -f "$path" && "$path" != /dev/fd/* ]] || return 0
+  exec {NAS_BACKUP_PWFD}<"$path"
+  rm -f "$path"
+  NAS_BACKUP_PWFILE="/dev/fd/${NAS_BACKUP_PWFD}"
+}
+
+password_fd_contents() {
+  local fd="${NAS_BACKUP_PWFD:-}"
+  [[ -n "$fd" ]] || return 1
+  python3 - "$fd" <<'PY'
+import os, sys
+fd = int(sys.argv[1])
+os.lseek(fd, 0, os.SEEK_SET)
+data = os.read(fd, 1 << 20)
+os.lseek(fd, 0, os.SEEK_SET)
+sys.stdout.buffer.write(data)
+PY
+}
+
 password_cleanup() {
   local f="${NAS_BACKUP_PWFILE:-}"
   NAS_BACKUP_PWFILE=""
-  if [[ -n "$f" && -e "$f" ]]; then
-    if have shred; then
-      shred -u "$f" 2>/dev/null || rm -f "$f"
-    else
-      : >"$f"
-      rm -f "$f"
-    fi
+  if [[ -n "${NAS_BACKUP_PWFD:-}" ]]; then
+    eval "exec ${NAS_BACKUP_PWFD}<&-" 2>/dev/null || true
+    NAS_BACKUP_PWFD=""
   fi
+  _password_unlink "$f"
   f="${NAS_BACKUP_ENVFILE:-}"
   NAS_BACKUP_ENVFILE=""
-  if [[ -n "$f" && -e "$f" ]]; then
-    if have shred; then
-      shred -u "$f" 2>/dev/null || rm -f "$f"
-    else
-      : >"$f"
-      rm -f "$f"
-    fi
-  fi
+  NAS_BACKUP_ENV_EXPORTS=""
+  _password_unlink "$f"
 }
 
 _nas_backup_on_exit() {
@@ -601,10 +642,14 @@ _nas_backup_on_signal() {
   esac
 }
 
-trap '_nas_backup_on_exit' EXIT
-trap '_nas_backup_on_signal INT' INT
-trap '_nas_backup_on_signal TERM' TERM
-trap '_nas_backup_on_signal HUP' HUP
+# Backend subprocesses source this file for helpers. Do not shred the parent's
+# tmpfs env file (S3 AWS_*) when that short-lived process exits.
+if [[ -z "${NAS_BACKUP_KIND:-}" ]]; then
+  trap '_nas_backup_on_exit' EXIT
+  trap '_nas_backup_on_signal INT' INT
+  trap '_nas_backup_on_signal TERM' TERM
+  trap '_nas_backup_on_signal HUP' HUP
+fi
 
 omaclone_acquire_lock() {
   local lock="$NAS_BACKUP_STATE_DIR/omaclone.lock"
@@ -675,7 +720,7 @@ secrets_try_get() {
   local backend="${1:-$(config_get secrets.backend prompt)}"
   [[ -n "$backend" ]] || backend=prompt
   local errfile
-  NAS_BACKUP_PWFILE=$(mktemp -p "$(_password_tmpdir)" omaclone.XXXXXX)
+  NAS_BACKUP_PWFILE=$(mktemp -p "$(_password_tmpdir)" omaclone.pw.XXXXXX)
   chmod 600 "$NAS_BACKUP_PWFILE"
   errfile=$(mktemp -p "$(_password_tmpdir)" omaclone.err.XXXXXX)
   if nas_backup_backend_run secrets "$backend" get >"$NAS_BACKUP_PWFILE" 2>"$errfile"; then
@@ -798,8 +843,19 @@ password_deferred_note() {
   printf '%s\n' "omaclone: password not available yet. Run: omaclone setup" >&2
 }
 
+_secrets_user_error() {
+  local kind="$1"
+  case "$kind" in
+    need_login) printf '%s\n' "Could not get the restic password: sign in to the password manager" ;;
+    not_found) printf '%s\n' "Could not get the restic password: item not found in the password manager" ;;
+    empty) printf '%s\n' "Could not get the restic password: the backend returned an empty password" ;;
+    *) printf '%s\n' "Could not get the restic password" ;;
+  esac
+}
+
 password_load() {
   password_cleanup
+  password_sweep_stale
   local backend errtext kind picked picked_backend
   backend=$(config_get secrets.backend prompt)
   [[ -n "$backend" ]] || backend=prompt
@@ -809,6 +865,7 @@ password_load() {
       if [[ "${NAS_BACKUP_CLEAR_CLIPBOARD:-}" == "1" ]] && have wl-copy; then
         wl-copy --clear 2>/dev/null || true
       fi
+      _password_seal
       return 0
     fi
     password_cleanup
@@ -826,17 +883,17 @@ password_load() {
         wl-copy --clear 2>/dev/null || true
       fi
       password_after_get_offers "$backend"
+      _password_seal
       return 0
     fi
     errtext="${NAS_BACKUP_SECRETS_ERRTEXT:-}"
     kind=$(secrets_error_kind "$backend" "$errtext")
-    if [[ -z "$errtext" ]]; then
-      errtext="secret backend '$backend' returned an empty password"
-    fi
+    local user_err
+    user_err=$(_secrets_user_error "$kind")
     if declare -F tui_error >/dev/null; then
-      tui_error "$errtext"
+      tui_error "$user_err"
     else
-      printf '%s\n' "$errtext" >&2
+      printf '%s\n' "$user_err" >&2
     fi
     local options=("Retry now")
     if secrets_has_unlock "$backend"; then
@@ -879,6 +936,7 @@ password_load() {
             wl-copy --clear 2>/dev/null || true
           fi
           password_after_get_offers "$backend"
+          _password_seal
           return 0
         fi
         ;;
@@ -920,20 +978,31 @@ transport_prepare_env() {
   local backend
   backend=$(config_get transport.backend)
   [[ -n "$backend" ]] || return 0
+  NAS_BACKUP_ENV_EXPORTS=""
   NAS_BACKUP_ENVFILE=$(mktemp -p "$(_password_tmpdir)" omaclone.env.XXXXXX)
   chmod 600 "$NAS_BACKUP_ENVFILE"
   : >"$NAS_BACKUP_ENVFILE"
   export NAS_BACKUP_ENVFILE
   if ! nas_backup_backend_run transport "$backend" pre-restic 2>/dev/null; then
+    _password_unlink "$NAS_BACKUP_ENVFILE"
+    NAS_BACKUP_ENVFILE=""
     die "transport '$backend' failed to prepare restic credentials"
   fi
+  if [[ -s "$NAS_BACKUP_ENVFILE" ]]; then
+    NAS_BACKUP_ENV_EXPORTS=$(cat "$NAS_BACKUP_ENVFILE")
+  fi
+  _password_unlink "$NAS_BACKUP_ENVFILE"
+  NAS_BACKUP_ENVFILE=""
 }
 
 restic_exec() {
   local repo
   repo=$(restic_repo)
   [[ -n "$repo" ]] || die "restic.repo is not set; run: omaclone setup"
-  [[ -n "$NAS_BACKUP_PWFILE" && -e "$NAS_BACKUP_PWFILE" ]] || die "password file missing"
+  if [[ -z "${NAS_BACKUP_PWFD:-}" ]]; then
+    die "password file missing"
+  fi
+  NAS_BACKUP_PWFILE="/dev/fd/${NAS_BACKUP_PWFD}"
   case "$repo" in
     s3:*|sftp:*) ;;
     *)
@@ -949,9 +1018,9 @@ restic_exec() {
       ;;
   esac
   (
-    if [[ -n "${NAS_BACKUP_ENVFILE:-}" && -s "$NAS_BACKUP_ENVFILE" ]]; then
+    if [[ -n "${NAS_BACKUP_ENV_EXPORTS:-}" ]]; then
       set -a
-      source "$NAS_BACKUP_ENVFILE"
+      eval "$NAS_BACKUP_ENV_EXPORTS"
       set +a
     fi
     restic --password-file "$NAS_BACKUP_PWFILE" --repo "$repo" "$@"
@@ -1012,7 +1081,7 @@ restic_summarize_fail() {
   local rc="$1"
   local errfile="${2:-}"
   python3 - "$rc" "$errfile" <<'PY'
-import re, sys
+import sys
 from pathlib import Path
 rc = sys.argv[1]
 path = Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
@@ -1022,17 +1091,7 @@ if path and path.is_file():
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         text = ""
-secret = re.compile(r"(password|secret|token|aws_|op://|pass-cli|Authorization)\S*", re.I)
-lines = []
-for raw in text.splitlines():
-    line = secret.sub("***", raw).strip()
-    if not line:
-        continue
-    low = line.lower()
-    if any(k in low for k in ("fatal", "error", "i/o", "input/output", "permission", "no space", "wrong password", "no key", "locked", "timeout", "connection")):
-        lines.append(line)
-snippet = " ".join(lines[-2:])[:180].strip()
-low = (snippet or text).lower()
+low = text.lower()
 if "wrong password" in low or "no key found" in low:
     print("Clone failed: restic password was rejected")
 elif "input/output" in low or "i/o error" in low:
@@ -1041,8 +1100,6 @@ elif "no space" in low:
     print("Clone failed: no space left on the clone location")
 elif "permission denied" in low:
     print("Clone failed: permission denied on the clone location")
-elif snippet:
-    print(snippet)
 else:
     print(f"Clone failed (restic exited {rc})")
 PY
@@ -1171,8 +1228,9 @@ etc_rel_ok() {
   local rel="$1"
   [[ -n "$rel" && "$rel" != \#* ]] || return 1
   case "$rel" in
-    /*|*..*) return 1 ;;
+    /*|*..*|*';'*|*' '*|*$'\t'*|*$'\n'*|*'*'*) return 1 ;;
   esac
+  [[ "$rel" == ./* || "$rel" == */./* || "$rel" == */. ]] && return 1
   local base="${rel%%/*}"
   case "$base" in
     fstab|crypttab|hostname|hosts|passwd|group|shadow|gshadow|machine-id|mkinitcpio.conf|cryptsetup-keys.d|systemd|pam.d|polkit-1|cron|cron.d|cron.daily|ssl|ssh)
@@ -1331,8 +1389,15 @@ write_recovery_card() {
   repo=$(config_get restic.repo)
   endpoint=$(config_get transport.endpoint)
   bucket=$(config_get transport.bucket)
-  local disk_uuid
+  local disk_uuid kit_digest=""
   disk_uuid=$(config_get transport.uuid)
+  if [[ -f "$NAS_BACKUP_ROOT/scripts/bootstrap_copy.py" ]]; then
+    kit_digest=$(python3 "$NAS_BACKUP_ROOT/scripts/bootstrap_copy.py" --digest "$NAS_BACKUP_ROOT" 2>/dev/null || true)
+  fi
+  local kit_line=""
+  if [[ -n "$kit_digest" ]]; then
+    kit_line="- Kit tree SHA-256: ${kit_digest}"
+  fi
   local restore_hint="/path/to/clone/restore"
   if [[ "$transport" == s3 ]]; then
     restore_hint=""
@@ -1372,6 +1437,7 @@ This card has **no passwords and no access keys**.
 - Transport: ${transport:-unknown}
 - Locator: ${uri:-${endpoint:+$endpoint $bucket}${disk_uuid:+UUID $disk_uuid}${mountpoint:+ $mountpoint}}
 - Restic repo: ${repo:-unset}
+${kit_line}
 
 ## New computer
 

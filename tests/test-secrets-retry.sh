@@ -17,9 +17,10 @@ source "$ROOT/scripts/backend.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 config_set secrets.backend dummy
-password_load || fail "test 1: password_load failed with dummy backend"
-[[ -n "${NAS_BACKUP_PWFILE:-}" ]] || fail "test 1: NAS_BACKUP_PWFILE unset"
-contents=$(cat "$NAS_BACKUP_PWFILE")
+config_set secrets.keyring_offer declined
+password_load </dev/null || fail "test 1: password_load failed with dummy backend"
+[[ -n "${NAS_BACKUP_PWFD:-}" ]] || fail "test 1: NAS_BACKUP_PWFD unset"
+contents=$(password_fd_contents)
 [[ "$contents" == "dummy-password-not-for-real-repos" ]] \
   || fail "test 1: pwfile contents mismatch: $contents"
 password_cleanup
@@ -50,7 +51,7 @@ chmod +x "$NAS_BACKUP_USER_CONFIG_DIR/backends/secrets/failing"
 
 config_set secrets.backend failing
 set +e
-if out=$(password_load 2>&1); then
+if out=$(password_load </dev/null 2>&1); then
   fail "test 2: password_load should have failed (rc=0)"
 fi
 set -e

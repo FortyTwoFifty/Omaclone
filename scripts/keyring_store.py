@@ -48,6 +48,62 @@ def normalize_secret(data: bytes) -> bytes:
     return data
 
 
+def _file_store_dir() -> str | None:
+    # Test-only: a directory of attribute files instead of GNOME Keyring.
+    # Production never sets OMACLONE_KEYRING_FILE.
+    raw = os.environ.get("OMACLONE_KEYRING_FILE", "").strip()
+    return raw or None
+
+
+def _file_store_path(attribute: str) -> str:
+    directory = _file_store_dir()
+    if directory is None:
+        raise RuntimeError("OMACLONE_KEYRING_FILE is not set")
+    if (
+        not attribute
+        or attribute in {".", ".."}
+        or "/" in attribute
+        or "\\" in attribute
+        or "\0" in attribute
+    ):
+        raise ValueError(f"invalid attribute name: {attribute!r}")
+    return os.path.join(directory, attribute)
+
+
+def file_store_put(attribute: str, secret: str) -> None:
+    directory = _file_store_dir()
+    if directory is None:
+        raise RuntimeError("OMACLONE_KEYRING_FILE is not set")
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    path = _file_store_path(attribute)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, secret.encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+
+def file_store_get(attribute: str) -> str | None:
+    path = _file_store_path(attribute)
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except FileNotFoundError:
+        return None
+    return normalize_secret(data).decode("utf-8")
+
+
+def file_store_delete(attribute: str) -> None:
+    path = _file_store_path(attribute)
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+
+
 def _gi_secret() -> Any:
     import gi
 
@@ -270,6 +326,8 @@ def _which(name: str) -> str | None:
 
 
 def cmd_available() -> int:
+    if _file_store_dir() is not None:
+        return 0
     try:
         Secret = _gi_secret()
         _service(Secret)
@@ -279,6 +337,13 @@ def cmd_available() -> int:
 
 
 def cmd_ensure() -> int:
+    directory = _file_store_dir()
+    if directory is not None:
+        try:
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+        except OSError as exc:
+            return _die(str(exc))
+        return 0
     try:
         Secret = _gi_secret()
         svc = _service(Secret)
@@ -294,6 +359,12 @@ def cmd_put(attribute: str, label: str) -> int:
         secret = normalize_secret(raw).decode("utf-8")
     except (ValueError, UnicodeDecodeError) as exc:
         return _die(str(exc))
+    if _file_store_dir() is not None:
+        try:
+            file_store_put(attribute, secret)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _die(str(exc))
+        return 0
     try:
         Secret = _gi_secret()
         svc = _service(Secret)
@@ -305,6 +376,15 @@ def cmd_put(attribute: str, label: str) -> int:
 
 
 def cmd_get(attribute: str) -> int:
+    if _file_store_dir() is not None:
+        try:
+            text = file_store_get(attribute)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _die(str(exc))
+        if not text:
+            return _die(f"no omaclone secret stored for {attribute}")
+        sys.stdout.write(text)
+        return 0
     try:
         Secret = _gi_secret()
         svc = _service(Secret)
@@ -333,6 +413,12 @@ def cmd_get(attribute: str) -> int:
 
 
 def cmd_delete(attribute: str) -> int:
+    if _file_store_dir() is not None:
+        try:
+            file_store_delete(attribute)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _die(str(exc))
+        return 0
     try:
         Secret = _gi_secret()
         svc = _service(Secret)

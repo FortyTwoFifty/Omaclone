@@ -19,11 +19,7 @@ _maybe_generate_restic_password() {
   pw=$(generate_restic_password)
   printf '%s' "$pw" | nas_backup_backend_run secrets keyring put
   tui_note "Password generated and stored. It is shown once — save it in your password manager."
-  if have gum; then
-    gum style --bold "$pw" >/dev/tty
-  else
-    printf '%s\n' "$pw" >/dev/tty
-  fi
+  printf '%s\n' "$pw" >/dev/tty
   unset pw
   if tui_confirm "I have saved this password somewhere I can reach after a reinstall"; then
     return 0

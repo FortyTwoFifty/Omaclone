@@ -220,7 +220,7 @@ cmd_restore() {
   if etc_tar=$(staging_file etc.tar); then
     local etc_dir="$staging/etc-extract"
     mkdir -p "$etc_dir"
-    tar -C "$etc_dir" -xf "$etc_tar"
+    tar --no-same-owner --no-overwrite-dir -C "$etc_dir" -xf "$etc_tar"
     local allow="$ROOT/config/etc-restore.allow"
     if (( same_machine )) || [[ "$(config_get restore.profile)" == same-machine ]]; then
       log "same-machine: still refusing fstab/Limine/LUKS; applying allowlist only"
@@ -231,13 +231,39 @@ cmd_restore() {
         log "skip forbidden /etc path: $rel"
         continue
       fi
-      if [[ -e "$etc_dir/etc/$rel" ]]; then
+      local src="$etc_dir/etc/$rel"
+      if [[ -L "$src" ]]; then
+        log "skip symlink /etc path: $rel"
+        continue
+      fi
+      if [[ -e "$src" ]] && find "$src" -type l -print -quit | grep -q .; then
+        log "skip /etc path containing symlinks: $rel"
+        continue
+      fi
+      if [[ -e "$src" ]]; then
         sudo mkdir -p "/etc/$(dirname "$rel")"
-        sudo cp -a "$etc_dir/etc/$rel" "/etc/$rel"
+        sudo cp -a --no-dereference "$src" "/etc/$rel"
         log "restored /etc/$rel"
       fi
     done <"$allow"
   fi
+
+  _restore_pacman_from_list() {
+    local list="$1"
+    local pkgs=() pkg
+    while IFS= read -r pkg || [[ -n "$pkg" ]]; do
+      pkg="${pkg%%#*}"
+      pkg="${pkg//[$' \t']/}"
+      [[ -n "$pkg" ]] || continue
+      if [[ ! "$pkg" =~ ^[a-zA-Z0-9@._+-]+$ ]]; then
+        log "skip invalid package name"
+        continue
+      fi
+      pkgs+=("$pkg")
+    done <"$list"
+    ((${#pkgs[@]})) || return 0
+    sudo pacman -S --needed --noconfirm -- "${pkgs[@]}"
+  }
 
   local idlist
   if idlist=$(staging_file pkglist-identity.txt) && [[ -s "$idlist" ]]; then
@@ -245,7 +271,7 @@ cmd_restore() {
     cat "$idlist" >&2 || true
     if tui_confirm "Install these packages with pacman now?"; then
       log "installing identity packages…"
-      sudo pacman -S --needed --noconfirm -- $(grep -v '^$' "$idlist" | tr '\n' ' ') || true
+      _restore_pacman_from_list "$idlist" || true
     else
       log "skipped identity package install"
     fi
@@ -257,6 +283,10 @@ cmd_restore() {
       local pkg
       while IFS= read -r pkg; do
         [[ -z "$pkg" ]] && continue
+        if [[ ! "$pkg" =~ ^[a-zA-Z0-9@._+-]+$ ]]; then
+          log "skip invalid AUR package name"
+          continue
+        fi
         if match_hardware_pkg "$pkg"; then
           log "skip AUR hardware package: $pkg"
           continue
@@ -273,7 +303,7 @@ cmd_restore() {
       tui_note "Hardware packages from the previous boot drive:"
       cat "$hwlist" >&2 || true
       if tui_confirm "Install these hardware packages with pacman now? (same machine only)"; then
-        sudo pacman -S --needed --noconfirm -- $(grep -v '^$' "$hwlist" | tr '\n' ' ') || true
+        _restore_pacman_from_list "$hwlist" || true
       else
         log "skipped hardware package install"
       fi

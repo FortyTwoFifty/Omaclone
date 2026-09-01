@@ -28,18 +28,26 @@ nas_backup_backend_available secrets prompt || fail "prompt should be available"
 nas_backup_backend_available secrets example && fail "example should not be available"
 
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set secrets.backend dummy
-password_load
-[[ -n "$NAS_BACKUP_PWFILE" ]] || fail "pwfile unset"
-[[ "$NAS_BACKUP_PWFILE" == /dev/shm/* || "$NAS_BACKUP_PWFILE" == /run/user/* ]] || fail "pwfile not on tmpfs: $NAS_BACKUP_PWFILE"
-[[ -f "$NAS_BACKUP_PWFILE" ]] || fail "pwfile missing"
-contents=$(cat "$NAS_BACKUP_PWFILE")
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set secrets.keyring_offer declined
+password_load </dev/null
+[[ -n "${NAS_BACKUP_PWFD:-}" ]] || fail "pwfd unset"
+[[ "$NAS_BACKUP_PWFILE" == /dev/fd/* ]] || fail "pwfile should be sealed /dev/fd: $NAS_BACKUP_PWFILE"
+contents=$(password_fd_contents)
 [[ "$contents" == "dummy-password-not-for-real-repos" ]] || fail "pwfile contents: $contents"
-path=$NAS_BACKUP_PWFILE
+for _f in /dev/shm/omaclone.pw.* /run/user/"$(id -u)"/omaclone.pw.*; do
+  [[ -f "$_f" ]] || continue
+  fail "named password file still present after seal: $_f"
+done
 password_cleanup
-[[ ! -e "$path" ]] || fail "pwfile not unlinked"
+[[ -z "${NAS_BACKUP_PWFD:-}" ]] || fail "pwfd not cleared"
 
 if grep -q dummy-password "$NAS_BACKUP_CONFIG"; then
   fail "password leaked into config"
 fi
+
+nas_backup_backend_find secrets '../../../evil.sh' && fail "backend find must reject path traversal"
+nas_backup_backend_name_ok '../x' && fail "backend name_ok must reject .."
+nas_backup_backend_name_ok 'foo/bar' && fail "backend name_ok must reject slash"
+nas_backup_backend_name_ok prompt || fail "backend name_ok should accept prompt"
 
 echo "OK"
