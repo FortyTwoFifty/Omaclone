@@ -37,8 +37,11 @@ def _fstype(path: str) -> str:
         )
     except (OSError, subprocess.CalledProcessError):
         return ""
-    line = out.strip().splitlines()
-    return line[0] if line else ""
+    for line in out.strip().splitlines():
+        kind = line.strip()
+        if kind and kind != "autofs":
+            return kind
+    return ""
 
 def _targets() -> list[str]:
     pinned = os.environ.get("OMACLONE_DISCOVER_TARGETS")

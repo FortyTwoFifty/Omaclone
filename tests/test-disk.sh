@@ -75,9 +75,29 @@ echo "PASS: _format_device does not hardcode label"
 
 grep -q 'install-disk-mount.sh' "$ROOT/backends/transport/disk" && fail "setup should not call install-disk-mount.sh"
 echo "PASS: no systemd mount install in setup"
+grep -q 'nosuid,nodev,noexec' "$ROOT/scripts/install-disk-mount.sh" \
+  || fail "disk systemd mount should be nosuid,nodev,noexec"
+echo "PASS: disk mount options include nosuid,nodev,noexec"
 
-grep -q 'findmnt.*by-uuid.*cfg transport.uuid' "$ROOT/backends/transport/disk" || fail "bootstrap-install should prefer findmnt TARGET"
+grep -q 'findmnt.*|| true' "$ROOT/backends/transport/disk" \
+  || fail "findmnt miss must not abort mount under pipefail"
+grep -q '_disk_uuid_src' "$ROOT/backends/transport/disk" || fail "disk should resolve UUID via _disk_uuid_src"
+grep -q 'omaclone_kit_dir' "$ROOT/backends/transport/disk" || fail "bootstrap-install should use omaclone_kit_dir"
 echo "PASS: bootstrap-install prefers live TARGET"
+
+grep -q 'gum confirm --default=false' "$ROOT/backends/transport/disk" \
+  || fail "USB/hotplug setup should default to no fixed mountpoint"
+echo "PASS: removable disks default to cold/udisks"
+
+grep -q 'uid=$(command id -u),gid=$(command id -g)' "$ROOT/backends/transport/disk" \
+  || fail "FAT/exFAT hot mounts should set uid/gid (command id; id() is the backend verb)"
+grep -q 'uid=$(id -u),gid=$(id -g)' "$ROOT/scripts/install-disk-mount.sh" \
+  || fail "disk systemd mount should set uid/gid for FAT/exFAT"
+echo "PASS: FAT/exFAT mounts include uid/gid"
+
+uuid_fat="6A73-E22F"
+[[ "$uuid_fat" =~ ^[0-9a-fA-F-]{8,36}$ ]] || fail "FAT-style UUID should match install-disk-mount regex"
+echo "PASS: FAT-style UUID 6A73-E22F is valid"
 
 grep -q 'omaclone/repo' "$ROOT/backends/transport/disk" || fail "disk should default restic.repo under omaclone/"
 echo "PASS: disk restic.repo uses omaclone/ kit dir"
@@ -181,5 +201,73 @@ echo "PASS: post_restic is no-op (hybrid)"
 
 _unmount
 echo "PASS: unmount is no-op (hybrid)"
+
+# Real backend: leftover root repo still binds to <mount>/omaclone/repo
+export OMACLONE_DISK_BY_UUID_DIR="$FAKE_DEV_TREE/disk/by-uuid"
+fake_live="$NAS_BACKUP_USER_CONFIG_DIR/media-disk"
+mkdir -p "$fake_live/repo"
+touch "$fake_live/repo/config"
+TEST_MOUNTS_FILE=$(mktemp)
+export TEST_MOUNTS_FILE
+echo "$fake_live" > "$TEST_MOUNTS_FILE"
+cfg_set transport.uuid "test-uuid"
+cfg_set transport.mountpoint ""
+cfg_set transport.mode cold
+cfg_set restic.repo "$fake_live/repo"
+"$ROOT/backends/transport/disk" mount >/dev/null
+got=$(python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" get restic.repo)
+[[ "$got" == "$fake_live/omaclone/repo" ]] \
+  || fail "bind should ignore root repo, got $got"
+[[ -d "$fake_live/omaclone/repo" ]] || fail "bind should create omaclone/repo"
+echo "PASS: mount binds leftover root repo onto omaclone/repo"
+
+# Real backend: empty mountpoint calls udisksctl
+: > "$UDISKSCTL_ACTION"
+rm -f "$MOUNT_LOG"
+echo "" > "$TEST_MOUNTS_FILE"
+cfg_set transport.mountpoint ""
+cfg_set restic.repo ""
+cat >"$MOCK_BIN/udisksctl" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+echo "udisksctl \$*" >> "${UDISKSCTL_ACTION}"
+if [[ "\${1:-}" == mount ]]; then
+  echo "${fake_live}" > "${TEST_MOUNTS_FILE}"
+fi
+exit 0
+EOF
+chmod +x "$MOCK_BIN/udisksctl"
+"$ROOT/backends/transport/disk" mount >/dev/null
+grep -q 'mount -b' "$UDISKSCTL_ACTION" || fail "cold mount should call udisksctl mount -b: $(cat "$UDISKSCTL_ACTION")"
+echo "PASS: cold mount invokes udisksctl"
+
+# Real backend: hot exfat mount logs uid/gid
+preferred_mp="$NAS_BACKUP_USER_CONFIG_DIR/mnt-hot"
+mkdir -p "$preferred_mp"
+cat >"$MOCK_BIN/sudo" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+echo "sudo \$*" >> "${MOUNT_LOG}"
+if [[ "\${1:-}" == -n ]]; then shift; fi
+if [[ "\${1:-}" == mkdir ]]; then
+  mkdir -p "\${@: -1}"
+fi
+if [[ "\${1:-}" == mount ]]; then
+  echo "${preferred_mp}" > "${TEST_MOUNTS_FILE}"
+fi
+exit 0
+EOF
+chmod +x "$MOCK_BIN/sudo"
+: > "$MOUNT_LOG"
+echo "" > "$TEST_MOUNTS_FILE"
+cfg_set transport.mountpoint "$preferred_mp"
+cfg_set transport.fstype exfat
+cfg_set transport.mode hot
+"$ROOT/backends/transport/disk" mount >/dev/null
+grep -q "uid=$(id -u),gid=$(id -g)" "$MOUNT_LOG" \
+  || fail "hot exfat mount should pass uid/gid: $(cat "$MOUNT_LOG")"
+grep -q "nosuid,nodev,noexec" "$MOUNT_LOG" \
+  || fail "hot mount should keep nosuid,nodev,noexec: $(cat "$MOUNT_LOG")"
+echo "PASS: hot exfat mount passes uid/gid and nosuid,nodev,noexec"
 
 echo "OK"

@@ -42,6 +42,22 @@ assert mod.backend_for_fstype("fuse.sshfs") == "sftp"
 assert mod.backend_for_fstype("fuse.sftp") == "sftp"
 assert mod.backend_for_fstype("ext4") == "disk"
 assert mod.backend_for_fstype("") == "disk"
+assert mod.backend_for_fstype("autofs") == "disk"
+
+def _fake_fstype(output):
+    import subprocess
+    def check_output(*args, **kwargs):
+        return output
+    orig = subprocess.check_output
+    subprocess.check_output = check_output
+    try:
+        return mod._fstype("/mnt/Omaclone-NAS")
+    finally:
+        subprocess.check_output = orig
+
+assert _fake_fstype("autofs\nnfs4\n") == "nfs4"
+assert _fake_fstype("autofs\n") == ""
+assert _fake_fstype("exfat\n") == "exfat"
 PY
 
 kit=$(mktemp -d)

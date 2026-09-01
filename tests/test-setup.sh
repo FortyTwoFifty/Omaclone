@@ -21,6 +21,8 @@ printf '%s\n' "$out" | grep -qi "empty" || fail "empty id error should mention e
 [[ "$(location_default_schedule disk)" == off ]] || fail "disk without mode should default off"
 [[ "$(location_default_schedule disk hot)" == on ]] || fail "hot disk should default on"
 [[ "$(location_default_schedule nfs)" == on ]] || fail "nfs should default on"
+[[ "$(location_default_label disk disk cold)" == USB ]] || fail "cold disk label"
+[[ "$(location_default_label nfs nas)" == NAS ]] || fail "nfs label"
 
 omaclone_test_cfg transport.backend local
 omaclone_test_cfg restic.repo "$HOME/repo"

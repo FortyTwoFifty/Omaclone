@@ -13,7 +13,12 @@ tests=(
   tests/test-nfs.sh
   tests/test-cifs.sh
   tests/test-sftp-url.sh
+  tests/test-nas-path.sh
+  tests/test-nas-live.sh
+  tests/test-s3.sh
   tests/test-disk.sh
+  tests/test-disk-candidates.sh
+  tests/test-disk-live.sh
   tests/test-deps.sh
   tests/test-discover.sh
   tests/test-forget.sh
@@ -22,9 +27,13 @@ tests=(
   tests/test-install.sh
   tests/test-setup.sh
   tests/test-restore-safety.sh
+  tests/test-password-file.sh
+  tests/test-redaction.sh
+  tests/test-prep-safety.sh
   tests/test-units.sh
   tests/test-cron-skip.sh
   tests/test-restic-roundtrip.sh
+  tests/test-s3-roundtrip.sh
 )
 
 failed=0

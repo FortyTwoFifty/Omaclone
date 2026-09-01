@@ -9,6 +9,33 @@ describe() { printf '%s\n' "Extra disk (USB, 2nd drive, hybrid)"; }
 available() { exit 0; }
 capabilities() { printf '%s\n' "mount removable discover"; }
 
+_disk_uuid_src() {
+  local uuid="$1"
+  printf '%s/%s\n' "${OMACLONE_DISK_BY_UUID_DIR:-/dev/disk/by-uuid}" "$uuid"
+}
+
+_disk_json_get() {
+  python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2]) or "")' "$1" "$2"
+}
+
+_disk_is_removable() {
+  local rec="$1" tran hotplug
+  tran=$(_disk_json_get "$rec" tran)
+  hotplug=$(_disk_json_get "$rec" hotplug)
+  [[ "$tran" == usb || "$hotplug" == True || "$hotplug" == true || "$hotplug" == 1 ]]
+}
+
+_disk_mount_options() {
+  local fstype="${1:-auto}"
+  local opts="noatime,nosuid,nodev,noexec"
+  case "${fstype,,}" in
+    vfat|exfat|ntfs|ntfs3|msdos|fuseblk)
+      opts="$opts,uid=$(command id -u),gid=$(command id -g)"
+      ;;
+  esac
+  printf '%s\n' "$opts"
+}
+
 _pick_device() {
   local lines=() rec line label
   while IFS= read -r rec; do
@@ -74,10 +101,10 @@ setup() {
 
   local rec path uuid fstype mountpoint label
   rec=$(_pick_device) || exit 1
-  path=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])')
-  uuid=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("uuid") or "")')
-  fstype=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("fstype") or "")')
-  label=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("label") or "")')
+  path=$(_disk_json_get "$rec" path)
+  uuid=$(_disk_json_get "$rec" uuid)
+  fstype=$(_disk_json_get "$rec" fstype)
+  label=$(_disk_json_get "$rec" label)
 
   if [[ -n "$fstype" && -n "$uuid" ]]; then
     if have_cmd gum; then
@@ -95,13 +122,23 @@ for line in sys.stdin:
     if d.get("path")==want:
         print(line.strip()); break
 ' "$path")
-    uuid=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("uuid") or "")')
-    fstype=$(printf '%s' "$rec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("fstype") or "ext4")')
+    uuid=$(_disk_json_get "$rec" uuid)
+    fstype=$(_disk_json_get "$rec" fstype)
+    [[ -n "$fstype" ]] || fstype=ext4
     [[ -n "$uuid" ]] || { printf '%s\n' "format did not produce a UUID" >&2; exit 1; }
   fi
 
   mountpoint=$(cfg transport.mountpoint "")
-  mountpoint=$(gum_input "Mountpoint for this disk (empty = desktop mount)" "$mountpoint")
+  if _disk_is_removable "$rec"; then
+    # USB / hotplug: mount with udisks while cloning. A fixed path is opt-in.
+    if have_cmd gum && gum confirm --default=false "Use a fixed mountpoint (always-plugged extra disk)?"; then
+      mountpoint=$(gum_input "Mountpoint for this disk" "${mountpoint:-/mnt/omaclone}")
+    else
+      mountpoint=""
+    fi
+  else
+    mountpoint=$(gum_input "Mountpoint for this disk (empty = desktop mount)" "$mountpoint")
+  fi
 
   cfg_set transport.backend disk
   cfg_set transport.uuid "$uuid"
@@ -124,7 +161,11 @@ _disk_own() {
     return 0
   fi
   sudo_noninteractive mkdir -p "$path" || return 1
-  sudo_noninteractive chown "$(id -u):$(id -g)" "$path"
+  if sudo_noninteractive chown "$(command id -u):$(command id -g)" "$path" 2>/dev/null; then
+    return 0
+  fi
+  # exFAT/vfat cannot chown; uid= on the mount is enough if the path is writable.
+  [[ -w "$path" ]]
 }
 
 _disk_bind_repo() {
@@ -139,27 +180,28 @@ _disk_bind_repo() {
 }
 
 mount() {
-  local uuid mountpoint fstype live_target
+  local uuid mountpoint fstype live_target src opts
   uuid=$(cfg transport.uuid)
   mountpoint=$(cfg transport.mountpoint "")
   fstype=$(cfg transport.fstype auto)
   [[ -n "$uuid" ]] || { printf '%s\n' "transport.uuid is empty" >&2; exit 1; }
 
-  live_target=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1)
+  src=$(_disk_uuid_src "$uuid")
+  live_target=$(findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1 || true)
   if [[ -n "$live_target" ]]; then
     _disk_bind_repo "$live_target"
     exit 0
   fi
 
-  local src="/dev/disk/by-uuid/$uuid"
   if [[ ! -e "$src" ]]; then
     printf '%s\n' "backup disk UUID $uuid is not connected" >&2
     exit 1
   fi
 
   if [[ -n "$mountpoint" ]]; then
+    opts=$(_disk_mount_options "$fstype")
     sudo_noninteractive mkdir -p "$mountpoint" || exit 1
-    sudo_noninteractive mount -t "$fstype" -o noatime,nosuid,nodev,noexec "$src" "$mountpoint" || exit 1
+    sudo_noninteractive mount -t "$fstype" -o "$opts" "$src" "$mountpoint" || exit 1
   elif have_cmd udisksctl; then
     udisksctl mount -b "$src" >/dev/null 2>&1 || { printf '%s\n' "udisksctl mount failed for $src" >&2; exit 1; }
   else
@@ -167,7 +209,7 @@ mount() {
     exit 1
   fi
 
-  live_target=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1)
+  live_target=$(findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1 || true)
   if [[ -n "$live_target" ]]; then
     _disk_bind_repo "$live_target"
   fi
@@ -178,8 +220,8 @@ unmount() {
   [[ "$(cfg transport.mode)" == cold ]] || return 0
   uuid=$(cfg transport.uuid)
   mountpoint=$(cfg transport.mountpoint "")
-  src="/dev/disk/by-uuid/$uuid"
-  live=$(findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1)
+  src=$(_disk_uuid_src "$uuid")
+  live=$(findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1 || true)
   [[ -n "$live" ]] || return 0
   if [[ -n "$mountpoint" ]]; then
     sudo_noninteractive umount "$live" 2>/dev/null || true
@@ -189,11 +231,12 @@ unmount() {
 }
 
 ready() {
-  local uuid live_target
+  local uuid live_target src
   uuid=$(cfg transport.uuid)
   [[ -n "$uuid" ]] || return 1
-  [[ -e "/dev/disk/by-uuid/$uuid" ]] || return 1
-  live_target=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1)
+  src=$(_disk_uuid_src "$uuid")
+  [[ -e "$src" ]] || return 1
+  live_target=$(findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1 || true)
   [[ -n "$live_target" ]]
 }
 
@@ -211,8 +254,9 @@ discover() {
 
 bootstrap-install() {
   ready || mount
-  local target dest
-  target=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$(cfg transport.uuid)" 2>/dev/null | head -n 1)
+  local target dest src
+  src=$(_disk_uuid_src "$(cfg transport.uuid)")
+  target=$(findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1 || true)
   [[ -z "$target" ]] && target="$(cfg transport.mountpoint /mnt/omaclone)"
   source "$NAS_BACKUP_ROOT/scripts/lib.sh"
   dest=$(omaclone_kit_dir "$target")

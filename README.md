@@ -80,8 +80,8 @@ Installed only for the transport you pick.
 | NAS over NFS | `nfs-utils` | `mount.nfs` / `mount.nfs4` |
 | NAS over SMB | `cifs-utils` | `mount.cifs`. Share password goes in Omaclone’s GNOME Keyring collection (`libsecret`) |
 | NAS over SFTP | `openssh` | `ssh`, `scp` |
-| Extra disk | — | Uses `lsblk` / `findmnt`. `udisksctl` mounts a cold disk if no mountpoint is set. Formatting a blank disk needs `mkfs.ext4` (`e2fsprogs`) |
-| S3-compatible cloud | — | Restic’s native S3 backend. Access keys go in Omaclone’s GNOME Keyring collection, never `config.toml` |
+| Extra disk | — | Uses `lsblk` / `findmnt`. USB/hotplug defaults to `udisksctl` (mount while cloning). The system disk and EFI partitions are never offered. Clones live in `<mount>/omaclone/`. Formatting a blank disk needs `mkfs.ext4` (`e2fsprogs`) |
+| S3-compatible cloud | — | Restic’s native S3 backend. Access keys go in Omaclone’s GNOME Keyring collection, never `config.toml`. MinIO defaults to HTTP (`transport.tls=0`); AWS/R2/Wasabi/B2 use HTTPS |
 | Already-mounted path | — | No extra packages |
 
 ### Optional — restic password
@@ -189,13 +189,13 @@ A longer walkthrough is in [RESTORE.md](RESTORE.md).
 | Profile | Transports | Typical use |
 |---|---|---|
 | NAS | `nfs`, `cifs`, `sftp` | TrueNAS, Synology, Unraid, generic Unix/SMB |
-| Extra disk | `disk` | 2nd NVMe (hot, always mounted) or USB (cold, mount on clone) |
+| Extra disk | `disk` | USB stick / enclosure (cold, `udisksctl` mount on clone) or 2nd NVMe (hot, optional fixed mountpoint) |
 | Cloud | `s3` | R2, AWS, Wasabi, B2 S3 API, MinIO |
 | Already mounted | `local` | Pre-mounted path |
 
 Vendor names are wizard hints, not separate backends. Synology does not need a DSM API: SMB or SFTP is enough.
 
-**Cold USB:** if the disk is unplugged when the daily timer fires, the clone is skipped and you get a notification — not a hard failure.
+**Cold USB:** plug it in. Setup mounts it with `udisksctl` (no sudo, no fixed path) and puts the restic repo in `omaclone/` on that volume — existing files stay. If it is unplugged when the daily timer fires, the clone is skipped and you get a notification — not a hard failure. Always-plugged extra disks can opt into a fixed mountpoint and the daily timer.
 
 **S3** cannot ship a runnable `./restore` file. Recovery is `omarchy plugin add` then the plugin-tree `omaclone restore`. Access keys live in the keyring, never in `config.toml`.
 
@@ -304,11 +304,13 @@ Edit `config/excludes.txt` (gitignore-style, relative to `$HOME`) and `config/ha
 
 ## Security
 
-- Restic password is **never** in `config.toml`, shell history, journald, or `ps`.
-- Paste-once uses `gum input --password` and a mode `600` tmpfs file, shredded when restic exits.
+- Restic password is **never** in `config.toml`, shell history, journald, or `ps`. After it is read, the named tmpfs file is unlinked and restic is given `/dev/fd/N` only.
+- Paste-once uses `gum input --password`. A generated password is printed to the tty by the shell, not passed to `gum` as an argument.
+- Clone failures store a short mapped message (`password was rejected`, I/O, permission, no space). Restic stderr is not copied into `last-result.json`, desktop notifications, or the bar.
 - SMB passwords and S3 keys use Omaclone’s own GNOME Keyring collection (or a prompt). Never the default desktop keyring, never `mount.cifs` argv. Writing to an unencrypted default keyring can make gnome-keyring refuse to load it after a secret with a newline is stored (Proton VPN and similar), which drops every other app’s saved passwords.
 - Do not reuse login, LUKS, or password-manager master passwords for the restic repo.
-- Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`) contain **no secrets**. The kit is still untrusted code; prefer `omarchy plugin add` from git.
+- Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`) contain **no secrets**. `SHA256SUMS` covers the scripts and backends the kit will execute; it is not a signature. Prefer `omarchy plugin add` from git. The recovery card includes a kit tree digest you can compare.
+- Prep never runs `sudo` on a script in the plugin tree. `/etc` collection is `sudo tar` with a fixed argv, written into a fresh staging directory as the user.
 - LUKS headers are not collected.
 
 Config: `~/.config/omaclone/config.toml` (mode `600`).  
@@ -351,6 +353,8 @@ Individual files still work:
 ./tests/test-locations.sh
 ./tests/test-nfs.sh
 ./tests/test-disk.sh
+./tests/test-disk-candidates.sh
+OMACLONE_DISK_LIVE=1 ./tests/test-disk-live.sh   # opt-in; needs a plugged extra disk
 ./tests/test-deps.sh
 ./tests/test-discover.sh
 ./tests/test-forget.sh

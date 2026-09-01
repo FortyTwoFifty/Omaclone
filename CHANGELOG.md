@@ -2,7 +2,12 @@
 
 ## 1.5.0
 
-- Clone and restore are covered by a hermetic restic round-trip and a `--cron` skip matrix (`make test`, GitHub Actions).
+- Extra disk: USB/hotplug defaults to `udisksctl` (mount while cloning). `findmnt` miss on an unmounted disk no longer aborts `mount` under `pipefail`. The picker skips EFI, BIOS-boot, MSR, and sub-1G partitions when a larger volume exists, and sorts unmounted removable first. Clones always go in `<mount>/omaclone/` even if a leftover `repo/` sits at the volume root. FAT/exFAT/NTFS hot mounts set `uid`/`gid` so the kit is writable. Disk/CIFS `uid=` uses `command id` so the backend `id` verb cannot shadow it. Discover ignores `autofs` fstype so an NFS kit is not labeled `disk`.
+- NFS `ready` requires a live `nfs`/`nfs4` mount (not idle autofs). Automount units include `nconnect=8,nosuid,nodev,noexec,proto=tcp`; `omaclone install` upgrades existing units and remounts hardening flags. CIFS setup probes the share before saving. `local` refuses an unmounted `/mnt` path and no longer defaults to `$HOME/Backups`. SFTP location JSON is offline when SSH is unreachable. `omaclone location --json` works. Kit `./restore` does not install `nfs-utils` when transport is empty. `omaclone copy` wakes/mounts the destination share. Clone excludes a restic repo that lives under `$HOME`.
+- Security: restic password is sealed on an unlinked `/dev/fd/N` (not a named `/dev/shm` file in `ps`). Clone errors no longer copy restic stderr into last-result, notify-send, or the bar. Kit `SHA256SUMS` covers scripts and backends; kit `config.toml` drops secret-looking keys. `sudo prep.sh` is gone (user prep + `sudo tar` for `/etc` only). Extra-disk mounts are `nosuid,nodev,noexec`.
+- Clone and restore are covered by a hermetic restic round-trip and a `--cron` skip matrix (`make test`, GitHub Actions). S3 is covered by URL/credential unit tests and a MinIO restic round-trip.
+- MinIO / custom S3 endpoints can use HTTP (`transport.tls=0`). AWS, R2, Wasabi, and B2 stay HTTPS.
+- S3 `pre-restic` keeps `$NAS_BACKUP_ENVFILE` so AWS keys actually reach restic. Backend processes do not shred that file on exit.
 - Failed S3 credentials are a password skip (warning chip), not a green “not mounted”.
 - `pre-restic` failures abort; restic is not run without AWS keys.
 - Setup **Start over** actually resets destination/secrets/locations. The restic repo on disk is not deleted.
