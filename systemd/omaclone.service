@@ -9,7 +9,9 @@ Type=oneshot
 TimeoutStartSec=6h
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=strict
+# true (not strict): strict remounts /mnt and /run/media read-only, which
+# breaks NAS and USB clone destinations. true only locks /usr /boot /efi.
+ProtectSystem=true
 RestrictSUIDSGID=yes
 LockPersonality=yes
 ExecStart=%h/.local/bin/omaclone clone --cron

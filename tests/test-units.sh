@@ -44,11 +44,11 @@ grep -q 'NoNewPrivileges=yes' "$retry" \
   || fail "keyring-retry.service must set NoNewPrivileges=yes"
 grep -q 'PrivateTmp=yes' "$retry" \
   || fail "keyring-retry.service must set PrivateTmp=yes"
-grep -q 'ProtectSystem=strict' "$unit" \
-  || fail "omaclone.service must set ProtectSystem=strict"
-grep -q 'ProtectSystem=strict' "$prune" \
-  || fail "omaclone-prune.service must set ProtectSystem=strict"
-grep -q 'ProtectSystem=strict' "$retry" \
-  || fail "keyring-retry.service must set ProtectSystem=strict"
+for f in "$unit" "$prune" "$retry"; do
+  grep -q '^ProtectSystem=true$' "$f" \
+    || fail "$(basename "$f") must set ProtectSystem=true"
+  grep -q '^ProtectSystem=strict$' "$f" \
+    && fail "$(basename "$f") must not use ProtectSystem=strict (it remounts /mnt and /run/media read-only)"
+done
 
 echo OK
