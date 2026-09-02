@@ -157,7 +157,7 @@ _setup_init_repo() {
         if grep -qi 'access denied' "$errfile" 2>/dev/null; then
           tui_error "S3 Access Denied at $repo. Keys can be right and this still happens when the region is wrong (restic signs us-east-1 unless you set the bucket's region) or the IAM user lacks s3:ListBucket on the bucket plus s3:GetObject/PutObject/DeleteObject on objects. AWS also returns Access Denied for a missing bucket."
         else
-          tui_error "$(tr '\n' ' ' <"$errfile" | cut -c1-400)"
+          tui_error "$(restic_summarize_fail "$rc" "$errfile")"
         fi
         rm -f "$errfile"
         password_cleanup
@@ -171,7 +171,7 @@ _setup_init_repo() {
 }
 
 _setup_register_location() {
-  local suggested id label schedule backend mode uuid existing
+  local suggested id label schedule backend mode uuid existing default_label
   backend=$(config_get transport.backend)
   mode=$(config_get transport.mode)
   uuid=$(config_get transport.uuid)
@@ -179,20 +179,26 @@ _setup_register_location() {
   if [[ -n "$uuid" ]]; then
     existing=$(location_find_id_by_uuid "$uuid" || true)
   fi
+  default_label=$(location_import_label \
+    "$(config_get transport.mountpoint)" \
+    "$(location_get "$existing" label "")" \
+    "$backend" "$mode" "$uuid")
+  [[ -n "$default_label" ]] || default_label=$(location_default_label "$backend" "$(config_get destination.profile)" "$mode" "$(config_get transport.preset)")
   if [[ -n "$existing" ]]; then
     suggested="$existing"
   else
-    suggested=$(location_slug "$(location_default_label "$backend" "$(config_get destination.profile)" "$mode" "$(config_get transport.preset)")")
+    suggested=$(location_slug "$default_label")
   fi
   if command -v gum >/dev/null 2>&1; then
-    label=$(gum input --placeholder "Name for this location" --value "$(location_get "$existing" label "$(location_default_label "$backend" "$(config_get destination.profile)" "$mode" "$(config_get transport.preset)")")" </dev/tty)
+    label=$(gum input --placeholder "Name for this location" --value "$default_label" </dev/tty)
+    [[ -n "$label" ]] || label="$default_label"
     if [[ -n "$existing" ]]; then
       id="$existing"
     else
       id=$(gum input --placeholder "Short id" --value "$suggested" </dev/tty)
     fi
   else
-    label=$(location_default_label "$backend" "$(config_get destination.profile)" "$mode" "$(config_get transport.preset)")
+    label="$default_label"
     id="$suggested"
   fi
   if [[ -n "$existing" ]]; then
@@ -348,6 +354,7 @@ _setup_continue() {
   if [[ -z "$(config_get locations.ids)" ]]; then
     _setup_register_location
   fi
+  location_destination_edit_end
 
   _setup_install_or_schedule
 
@@ -394,7 +401,7 @@ cmd_setup() {
   fi
 
   tui_header "Omaclone setup"
-  tui_note "This writes ~/.config/omaclone/config.toml. It never stores the restic password."
+  tui_note "This writes ~/.config/omaclone/config.toml as you go. The restic password is never stored in that file."
 
   if [[ -n "$(config_get transport.backend)" && -z "$(config_get restic.repo)" ]]; then
     tui_note "Destination was not fully configured. Re-picking location…"; _setup_pick_destination; _setup_continue; return
@@ -406,7 +413,8 @@ cmd_setup() {
       "Continue setup" \
       "Change how omaclone gets the restic password" \
       "Replace this location's destination" \
-      "Start over" \
+      "Abandon this destination" \
+      "Erase all Omaclone settings…" \
       | gum choose --header="Omaclone setup is unfinished") || return 1
     case "$choice" in
       Continue*)
@@ -434,14 +442,27 @@ cmd_setup() {
         else
           location_save_current "$(location_active_id)"
         fi
+        location_destination_edit_end
         location_schedule_apply
         return
         ;;
-      Start*)
-        tui_confirm "This resets setup state. The restic repository on disk is not deleted." || return 0
+      Abandon*)
+        tui_confirm --default=false "Drop this unfinished destination? Other locations and the password source are kept." || return 0
+        location_destination_edit_end
+        setup_abandon_destination
+        LOCATION_LAST_ID=""
+        if [[ -n "$(location_active_id)" ]]; then
+          tui_note "Kept $(location_get "$(location_active_id)" label). This location is still configured."
+          return
+        fi
+        tui_note "Destination cleared. Choose a new one."
+        ;;
+      Erase*)
+        setup_confirm_erase_all || return 0
+        location_destination_edit_end
         setup_start_over
         LOCATION_LAST_ID=""
-        tui_note "Setup cleared. Choose a destination."
+        tui_note "All Omaclone settings on this computer were erased. Clone data on disk is unchanged."
         ;;
     esac
   elif [[ -n "$(config_get transport.backend)" ]]; then
@@ -452,6 +473,7 @@ cmd_setup() {
       "Replace this location's destination" \
       "Restore from an existing clone" \
       "Change how omaclone gets the restic password" \
+      "Erase all Omaclone settings…" \
       | gum choose --header="Omaclone is already configured")
     case "$next" in
       Add*) cmd_location add; return ;;
@@ -474,6 +496,12 @@ cmd_setup() {
         password_load || return 0
         password_cleanup
         return
+        ;;
+      Erase*)
+        setup_confirm_erase_all || return 0
+        setup_start_over
+        LOCATION_LAST_ID=""
+        tui_note "All Omaclone settings on this computer were erased. Clone data on disk is unchanged."
         ;;
     esac
   fi

@@ -142,7 +142,7 @@ cmd_status() {
     setupComplete=true
   fi
   local acked=false
-  if [[ "$status" == fail ]] && issue_is_acked "${unix:-0}" "$loc_id"; then
+  if issue_is_acked "${unix:-0}" "$loc_id"; then
     acked=true
   fi
   local loc_json connected=false watchPath="" _conn=""
@@ -162,7 +162,6 @@ cmd_status() {
     | if ($l | type) != "object" then empty
       elif $l.backend == "disk" and ($l.uuid | tostring | length) > 0
         then "/dev/disk/by-uuid/\($l.uuid)"
-      elif ($l.mountpoint | tostring | length) > 0 then $l.mountpoint
       else empty end
   ' 2>/dev/null || true)
   local watchPaths='[]'
@@ -171,7 +170,6 @@ cmd_status() {
       | select(.source != "discovered")
       | if .backend == "disk" and (.uuid | tostring | length) > 0
         then "/dev/disk/by-uuid/\(.uuid)"
-        elif (.mountpoint | tostring | length) > 0 then .mountpoint
         else empty end
     ] | unique
   ' 2>/dev/null || true)
@@ -182,28 +180,36 @@ cmd_status() {
     severity=ok
     issueTitle=""
     [[ -n "$message" ]] || message="Run Set up Omaclone to create or restore a clone."
-  elif setup_is_unfinished; then
+  elif setup_is_unfinished && [[ "$acked" != true ]]; then
     severity=warning
     issueTitle="Setup unfinished"
     [[ -n "$message" ]] || message="Continue setup to finish this location."
   elif [[ "$connected" != true ]]; then
-    severity=warning
-    issueTitle="Location not connected"
-    [[ -n "$message" ]] || message="Plug in or mount the clone location, then retry."
+    if location_expected_offline "$loc_id"; then
+      severity=ok
+      issueTitle=""
+      [[ -n "$message" ]] || message="USB not plugged in"
+    elif [[ "$acked" != true ]]; then
+      severity=warning
+      issueTitle="Location not connected"
+      [[ -n "$message" ]] || message="Plug in or mount the clone location, then retry."
+    fi
   elif [[ "$status" == skip ]] && issue_is_password_skip "$reason" "$message"; then
-    severity=warning
-    issueKind=password_locked
-    issueTitle="Password manager locked"
-    if [[ "$secrets" == keyring ]] && keyring_retry_active; then
-      message="The last automatic clone did not run because the keyring was locked. It will run when you unlock it."
-    else
-      message="The last automatic clone did not run because the password manager was locked. Store the restic password in the keyring for unattended clones, or clone from the pane after signing in."
+    if [[ "$acked" != true ]]; then
+      severity=warning
+      issueKind=password_locked
+      issueTitle="Password manager locked"
+      if [[ "$secrets" == keyring ]] && keyring_retry_active; then
+        message="The last automatic clone did not run because the keyring was locked. It will run when you unlock it."
+      else
+        message="The last automatic clone did not run because the password manager was locked. Store the restic password in the keyring for unattended clones, or clone from the pane after signing in."
+      fi
     fi
   elif [[ "$status" == skip ]]; then
     if issue_is_disconnect "$message" "$transport"; then
       severity=ok
       issueTitle=""
-    else
+    elif [[ "$acked" != true ]]; then
       severity=warning
       issueTitle="Clone skipped"
       [[ -n "$message" ]] || message="Automatic clone was skipped."
@@ -456,14 +462,20 @@ _location_import_discovered() {
     config_set transport.mode cold
     config_set destination.profile disk
   fi
-  local id uuid
+  local id uuid mode label schedule existing_label
   uuid=$(config_get transport.uuid)
+  mode=$(config_get transport.mode)
+  [[ -n "$mode" ]] || mode=cold
   id=""
   if [[ -n "$uuid" ]]; then
     id=$(location_find_id_by_uuid "$uuid" || true)
   fi
   [[ -n "$id" ]] || id=$(location_slug "usb")
-  location_save_current "$id" "Discovered $(basename "$mp")" off
+  existing_label=$(location_get "$id" label "")
+  label=$(location_import_label "$mp" "$existing_label" "$backend" "$mode" "$uuid")
+  schedule=$(location_get "$id" schedule "")
+  [[ -n "$schedule" ]] || schedule=off
+  location_save_current "$id" "$label" "$schedule"
   location_activate "$id"
 }
 
@@ -546,6 +558,8 @@ cmd_uninstall() {
   omaclone_uninstall_menu
   log "removed PATH command, timers, plugin symlink, and Super+Space menu entries"
   log "config (~/.config/omaclone) and clones were not deleted"
+  log "NFS/disk systemd mounts in /etc/systemd/system were not removed (needs sudo)"
+  log "lingering login was not disabled; to disable: loginctl disable-linger $USER"
   log "if the bar widget is still a git clone: omarchy plugin remove $PLUGIN_ID"
 }
 

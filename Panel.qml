@@ -328,6 +328,7 @@ Panel {
               spacing: Style.space(2)
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: "Omaclone"
                 color: root.foreground
@@ -338,6 +339,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: root.heroMeta.toUpperCase()
                 color: root.dim
@@ -371,6 +373,7 @@ Panel {
             spacing: Style.space(6)
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: backup.switching ? "SWITCHING…" : "LOCATION"
               color: root.dim
@@ -394,6 +397,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: backup.switching
               width: parent.width
               text: "Switching to " + (backup.locationLabel || backup.locationId || "location") + "…"
@@ -441,6 +445,7 @@ Panel {
             spacing: Style.space(6)
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: "KEEP PLAN"
               color: root.dim
@@ -470,6 +475,7 @@ Panel {
             spacing: Style.space(8)
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: {
                 var prune = Model.retentionTighter(root.pendingPreset, backup.retentionPreset)
@@ -508,6 +514,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: "ACTIONS"
             color: root.dim
             font.family: root.fontFamily
@@ -541,6 +548,7 @@ Panel {
   component IssueBanner: Item {
     id: banner
     readonly property bool isError: backup.severity === "error" || backup.switchError !== ""
+    readonly property bool showRetry: banner.isError || backup.issueKind === "password_locked"
     readonly property color tone: banner.isError ? root.urgent : root.warning
     implicitHeight: bannerCol.implicitHeight + Style.space(20)
 
@@ -561,6 +569,7 @@ Panel {
       spacing: Style.space(8)
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: backup.switchError !== "" ? "SWITCH FAILED" : (banner.isError ? "ERROR" : "WARNING")
         color: banner.tone
@@ -571,6 +580,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: backup.switchError !== "" ? backup.switchError : (backup.lastError || backup.issueTitle || root.heroMeta)
         color: root.foreground
@@ -580,12 +590,12 @@ Panel {
       }
 
       Row {
-        visible: banner.isError || backup.issueKind === "password_locked"
         spacing: Style.space(8)
         width: parent.width
 
         ConfirmButton {
-          width: banner.isError ? (bannerCol.width - Style.space(8)) / 2 : bannerCol.width
+          visible: banner.showRetry
+          width: banner.showRetry ? (bannerCol.width - Style.space(8)) / 2 : 0
           label: backup.switchError !== "" ? "Retry switch" : (backup.issueKind === "password_locked" ? "Clone now" : "Retry clone")
           destructive: false
           onClicked: {
@@ -595,8 +605,7 @@ Panel {
           }
         }
         ConfirmButton {
-          visible: banner.isError
-          width: (bannerCol.width - Style.space(8)) / 2
+          width: banner.showRetry ? (bannerCol.width - Style.space(8)) / 2 : bannerCol.width
           label: "Dismiss"
           destructive: false
           onClicked: backup.dismissIssue()
@@ -630,6 +639,7 @@ Panel {
       spacing: Style.space(4)
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: tile.label
         color: root.dim
@@ -640,6 +650,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: tile.value
         color: root.foreground
@@ -650,6 +661,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: tile.hint
         color: root.dim
@@ -684,6 +696,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       anchors.centerIn: parent
       text: confirmBtn.label
       color: confirmBtn.destructive ? root.urgent : root.foreground

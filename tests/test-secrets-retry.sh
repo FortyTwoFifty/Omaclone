@@ -82,6 +82,22 @@ config_set locations.ids "nas"
 if setup_is_unfinished; then
   fail "test 8b: should NOT be unfinished after repo + location id"
 fi
+rm -f "$NAS_BACKUP_USER_CONFIG_DIR/no-repo/config"
+config_set transport.backend nfs
+config_set transport.mountpoint "/mnt/omaclone-not-mounted-$$"
+config_set restic.repo "/mnt/omaclone-not-mounted-$$/omaclone/repo"
+config_set locations.ids "nas"
+if setup_is_unfinished; then
+  fail "test 8c: offline NAS with a saved location must not look unfinished"
+fi
+config_set transport.backend disk
+config_set transport.uuid "NO-SUCH-USB-UUID"
+config_set transport.mode cold
+config_set restic.repo "/mnt/missing-usb/omaclone/repo"
+config_set locations.ids "usb"
+if setup_is_unfinished; then
+  fail "test 8d: unplugged USB with a saved location must not look unfinished"
+fi
 
 rm -f "$NAS_BACKUP_USER_CONFIG_DIR/no-repo/config"
 config_set locations.ids ""

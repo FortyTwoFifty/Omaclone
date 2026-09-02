@@ -81,12 +81,13 @@ _location_forgotten_unmark() {
 }
 
 location_drop() {
-  local id="$1" i out=() active uuid mp uri key
+  local id="$1" i out=() active uuid mp uri
   [[ -n "$id" ]] || return 1
   location_has "$id" || return 1
   uuid=$(location_get "$id" uuid)
   mp=$(location_get "$id" mountpoint)
   uri=$(location_get "$id" uri)
+  active=$(location_active_id)
   _location_forgotten_add "$uuid"
   _location_forgotten_add "$mp"
   _location_forgotten_add "$uri"
@@ -99,19 +100,12 @@ location_drop() {
     config_set locations.ids "${out[*]}"
   else
     config_set locations.ids ""
-    for key in backend uri mountpoint uuid device fstype mode endpoint bucket prefix region tls username port host remote_path preset role_arn lookup; do
-      config_set "transport.${key}" ""
-    done
-    config_set restic.repo ""
-    if [[ "${OMACLONE_SKIP_SYSTEMD:-}" != 1 ]]; then
-      systemctl --user disable --now omaclone.timer 2>/dev/null || true
-      systemctl --user disable --now omaclone-prune.timer 2>/dev/null || true
-    fi
+    location_clear_live
     config_set locations.migrated 1
   fi
   config_drop "locations.$id"
-  rm -f "$NAS_BACKUP_STATE_DIR/repo-stats-${id}.json" 2>/dev/null || true
-  active=$(location_active_id)
+  rm -f "$NAS_BACKUP_STATE_DIR/last-result-${id}.json" \
+        "$NAS_BACKUP_STATE_DIR/repo-stats-${id}.json" 2>/dev/null || true
   if [[ "$active" == "$id" ]]; then
     if ((${#out[@]})); then
       location_activate "${out[0]}"
@@ -123,6 +117,9 @@ location_drop() {
 
 location_forget_absent_disks() {
   local id backend uuid live kit
+  if location_destination_edit_held; then
+    return 0
+  fi
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
     backend=$(location_get "$id" backend)
@@ -281,6 +278,98 @@ location_default_label() {
   esac
 }
 
+_location_trim() {
+  local s="${1:-}"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s\n' "$s"
+}
+
+_location_generic_volume_name() {
+  local name="${1:-}"
+  local low
+  low=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+  case "$low" in
+    ""|omaclone|media|mnt|run|usb|disk|untitled|"new volume"|sda*|sdb*|sdc*|sdd*|nvme*)
+      return 0 ;;
+  esac
+  return 1
+}
+
+location_volume_name() {
+  local mp="${1:-}" uuid="${2:-}"
+  local name="" vol
+  if [[ -n "$uuid" && -e "/dev/disk/by-uuid/$uuid" ]]; then
+    name=$(_location_trim "$(lsblk -no LABEL "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n1)")
+  fi
+  if [[ -z "$name" && -n "$mp" ]]; then
+    vol="${mp%/}"
+    if [[ "$(basename "$vol")" == omaclone ]]; then
+      vol="$(dirname "$vol")"
+    fi
+    name=$(basename "$vol")
+  fi
+  _location_trim "$name"
+}
+
+location_label_from_mount() {
+  local mp="${1:-}" backend="${2:-disk}" mode="${3:-}" uuid="${4:-}"
+  local name
+  name=$(location_volume_name "$mp" "$uuid")
+  if _location_generic_volume_name "$name"; then
+    location_default_label "$backend" "" "$mode"
+    return
+  fi
+  printf '%s\n' "$name"
+}
+
+location_import_label() {
+  local mp="${1:-}" existing="${2:-}" backend="${3:-disk}" mode="${4:-}" uuid="${5:-}"
+  if [[ -n "$existing" && "$existing" != Discovered* ]]; then
+    printf '%s\n' "$existing"
+    return
+  fi
+  location_label_from_mount "$mp" "$backend" "$mode" "$uuid"
+}
+
+location_expected_offline() {
+  local id="${1:-}" backend mode
+  [[ -n "$id" ]] || return 1
+  backend=$(location_get "$id" backend)
+  mode=$(location_get "$id" mode)
+  [[ "$backend" == disk && "$mode" != hot ]]
+}
+
+location_relabel_discovered() {
+  local id label mp uuid backend mode new
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    label=$(location_get "$id" label)
+    [[ "$label" == Discovered* ]] || continue
+    backend=$(location_get "$id" backend)
+    mode=$(location_get "$id" mode)
+    mp=$(location_get "$id" mountpoint)
+    uuid=$(location_get "$id" uuid)
+    new=$(location_label_from_mount "$mp" "$backend" "$mode" "$uuid")
+    [[ -n "$new" && "$new" != "$label" ]] || continue
+    location_set "$id" label "$new"
+  done < <(location_ids)
+}
+
+location_clear_live() {
+  location_reset_live_transport ""
+  config_set_many \
+    transport.backend "" \
+    restic.initialized "" \
+    destination.profile "" \
+    destination.vendor "" \
+    locations.active ""
+  if [[ "${OMACLONE_SKIP_SYSTEMD:-}" != 1 ]]; then
+    systemctl --user disable --now omaclone.timer 2>/dev/null || true
+    systemctl --user disable --now omaclone-prune.timer 2>/dev/null || true
+  fi
+}
+
 _location_field_keys() {
   printf '%s\n' uri mountpoint uuid device fstype mode endpoint bucket prefix region tls username port host remote_path preset role_arn lookup
 }
@@ -311,54 +400,64 @@ location_destination_lock_path() {
 }
 
 location_destination_edit_begin() {
-  local path pid
+  local path
   mkdir -p "$NAS_BACKUP_STATE_DIR"
   path=$(location_destination_lock_path)
-  pid=$(head -n 1 "$path" 2>/dev/null || true)
-  if [[ -f "$path" && "$pid" == "$$" ]]; then
+  if [[ -n "${OMACLONE_DEST_LOCK_FD:-}" ]]; then
     OMACLONE_DEST_LOCK_DEPTH=$(( ${OMACLONE_DEST_LOCK_DEPTH:-1} + 1 ))
     return 0
   fi
+  exec {OMACLONE_DEST_LOCK_FD}>>"$path"
+  flock "${OMACLONE_DEST_LOCK_FD}"
   printf '%s\n' "$$" >"$path"
   OMACLONE_DEST_LOCK_DEPTH=1
 }
 
 location_destination_edit_end() {
-  local path pid
+  local path
   path=$(location_destination_lock_path)
-  [[ -f "$path" ]] || { OMACLONE_DEST_LOCK_DEPTH=0; return 0; }
-  pid=$(head -n 1 "$path" 2>/dev/null || true)
-  if [[ "$pid" != "$$" ]]; then
+  if [[ -z "${OMACLONE_DEST_LOCK_FD:-}" ]]; then
+    OMACLONE_DEST_LOCK_DEPTH=0
     return 0
   fi
   OMACLONE_DEST_LOCK_DEPTH=$(( ${OMACLONE_DEST_LOCK_DEPTH:-1} - 1 ))
   if (( OMACLONE_DEST_LOCK_DEPTH > 0 )); then
     return 0
   fi
+  flock -u "${OMACLONE_DEST_LOCK_FD}" 2>/dev/null || true
+  eval "exec ${OMACLONE_DEST_LOCK_FD}>&-"
+  OMACLONE_DEST_LOCK_FD=""
   OMACLONE_DEST_LOCK_DEPTH=0
   rm -f "$path"
 }
 
 location_destination_edit_held() {
-  local path pid
+  local path fd
+  [[ -n "${OMACLONE_DEST_LOCK_FD:-}" ]] && return 0
   path=$(location_destination_lock_path)
-  [[ -f "$path" ]] || return 1
-  pid=$(head -n 1 "$path" 2>/dev/null || true)
-  [[ -n "$pid" ]] || return 1
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [[ -d "/proc/$pid" ]]
+  [[ -e "$path" ]] || return 1
+  exec {fd}<>"$path" || return 1
+  if flock -n "$fd"; then
+    flock -u "$fd" 2>/dev/null || true
+    eval "exec ${fd}>&-"
+    return 1
+  fi
+  eval "exec ${fd}>&-"
+  return 0
 }
 
 location_reset_live_transport() {
   local backend="${1:-}" key
+  local -a pairs=()
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
-    config_set "transport.${key}" ""
+    pairs+=("transport.${key}" "")
   done < <(_location_field_keys)
-  config_set restic.repo ""
+  pairs+=(restic.repo "")
   if [[ -n "$backend" ]]; then
-    config_set transport.backend "$backend"
+    pairs+=(transport.backend "$backend")
   fi
+  config_set_many "${pairs[@]}"
 }
 
 _location_wake() {
@@ -469,7 +568,6 @@ location_save_current() {
   mp=$(config_get transport.mountpoint)
   uri=$(config_get transport.uri)
   _location_forgotten_unmark "$uuid" "$mp" "${mp:+$mp/omaclone}" "$uri"
-  config_set locations.migrated 1
   mode=$(config_get transport.mode)
   if [[ "$backend" == disk && -z "$mode" ]]; then
     if [[ -n "$mp" ]]; then
@@ -477,29 +575,34 @@ location_save_current() {
     else
       mode=cold
     fi
-    config_set transport.mode "$mode"
   fi
   profile=$(location_profile_for_backend "$backend" "$(config_get destination.profile)")
   label="${2:-$(location_default_label "$backend" "$profile" "$mode" "$(config_get transport.preset)")}"
   schedule="${3:-$(location_default_schedule "$backend" "$mode")}"
-  location_set "$id" backend "$backend"
-  location_set "$id" repo "$(config_get restic.repo)"
-  location_set "$id" label "$label"
-  location_set "$id" profile "$profile"
-  if [[ "$profile" == nas ]]; then
-    location_set "$id" vendor "$(config_get destination.vendor)"
-  else
-    location_set "$id" vendor ""
+  local -a pairs=()
+  pairs+=(locations.migrated 1)
+  if [[ "$backend" == disk && -n "$mode" ]]; then
+    pairs+=(transport.mode "$mode")
   fi
-  location_set "$id" schedule "$schedule"
+  pairs+=("locations.${id}.backend" "$backend")
+  pairs+=("locations.${id}.repo" "$(config_get restic.repo)")
+  pairs+=("locations.${id}.label" "$label")
+  pairs+=("locations.${id}.profile" "$profile")
+  if [[ "$profile" == nas ]]; then
+    pairs+=("locations.${id}.vendor" "$(config_get destination.vendor)")
+  else
+    pairs+=("locations.${id}.vendor" "")
+  fi
+  pairs+=("locations.${id}.schedule" "$schedule")
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
-    location_set "$id" "$key" ""
+    pairs+=("locations.${id}.${key}" "")
   done < <(_location_field_keys)
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
-    location_set "$id" "$key" "$(config_get "transport.$key")"
+    pairs+=("locations.${id}.${key}" "$(config_get "transport.$key")")
   done < <(_location_backend_field_keys "$backend")
+  config_set_many "${pairs[@]}"
   location_ids_add "$id"
 }
 
@@ -594,6 +697,7 @@ location_sync_active() {
 
 migrate_locations() {
   location_ids_compact
+  location_relabel_discovered
   [[ -n "$(config_get locations.ids)" ]] && return 0
   [[ "$(config_get locations.migrated)" == 1 ]] && return 0
 
@@ -626,7 +730,9 @@ migrate_locations() {
 }
 
 location_list_json() {
-  location_forget_absent_disks
+  if ! location_destination_edit_held; then
+    location_forget_absent_disks
+  fi
   python3 - "$NAS_BACKUP_CONFIG" "$NAS_BACKUP_ROOT" "${NAS_BACKUP_STATE_DIR:-}" <<'PY'
 import json, os, subprocess, sys
 from pathlib import Path
@@ -654,10 +760,6 @@ def connected(loc: dict) -> bool:
         if not mp:
             return False
         try:
-            os.stat(mp)
-        except OSError:
-            pass
-        try:
             subprocess.check_call(["findmnt", "-n", "-t", "nfs,nfs4", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
         except (OSError, subprocess.CalledProcessError):
@@ -665,10 +767,6 @@ def connected(loc: dict) -> bool:
     if backend == "cifs":
         if not mp:
             return False
-        try:
-            os.stat(mp)
-        except OSError:
-            pass
         try:
             subprocess.check_call(["findmnt", "-n", "-t", "cifs", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
@@ -682,10 +780,6 @@ def connected(loc: dict) -> bool:
                 subprocess.check_call(["findmnt", "-n", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except (OSError, subprocess.CalledProcessError):
                 return not (mp.startswith("/mnt/") or mp.startswith("/media/") or mp.startswith("/run/media/"))
-            try:
-                os.stat(mp)
-            except OSError:
-                pass
             try:
                 out = subprocess.check_output(["findmnt", "-n", "-o", "FSTYPE", mp], text=True, stderr=subprocess.DEVNULL)
             except (OSError, subprocess.CalledProcessError):
@@ -906,7 +1000,7 @@ if not os.environ.get("OMACLONE_SKIP_DISCOVER"):
                     continue
                 disc_rec = {
                     "id": f"discovered:{uri}",
-                    "label": d.get("label") or f"Discovered {uri}",
+                    "label": d.get("label") or d.get("hint") or "USB",
                     "backend": d.get("backend") or "disk",
                     "schedule": "off",
                     "connected": True,

@@ -58,8 +58,17 @@ if declare -F deps_curl_install >/dev/null; then
 else
   fail "deps_curl_install not defined in deps.sh"
 fi
+if grep -nE 'eval[[:space:]]+"\$cmd"|eval[[:space:]]+\$cmd' "$ROOT/scripts/deps.sh" | grep -v '^[^:]*:[[:space:]]*#'; then
+  fail "deps_curl_install must not eval a downloaded installer"
+fi
+if grep -q 'proton.me/download/pass-cli/install.sh' "$ROOT/backends/secrets/pass-cli"; then
+  fail "pass-cli must not download vendor install.sh"
+fi
+if grep -qE 'cache.agilebits.com|deps_curl_install' "$ROOT/backends/secrets/1password"; then
+  fail "1password must not download a zip installer"
+fi
 
-echo "PASS: deps_curl_install exists"
+echo "PASS: no curl|bash secret-CLI installers"
 
 source "$ROOT/scripts/backend.sh"
 
@@ -121,6 +130,9 @@ echo "PASS: unknown verb dispatch returns non-zero for dummy"
 
 if ! grep -q 'setup_is_unfinished' "$ROOT/scripts/cmd-setup.sh"; then
   fail "omaclone should reference setup_is_unfinished for resume gating"
+fi
+if ! grep -q 'setup_confirm_erase_all' "$ROOT/scripts/cmd-setup.sh"; then
+  fail "setup must confirm before erasing all settings"
 fi
 
 echo "PASS: resume still uses setup_is_unfinished"

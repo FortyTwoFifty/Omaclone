@@ -17,7 +17,22 @@ omaclone_plugin_dest() {
   printf '%s\n' "${OMACLONE_PLUGIN_DIR:-$HOME/.config/omarchy/plugins/$PLUGIN_ID}"
 }
 
+omaclone_root_is_kit() {
+  local root="${1:-$NAS_BACKUP_ROOT}" parent
+  root=$(readlink -f "$root" 2>/dev/null || printf '%s' "$root")
+  parent=$(dirname "$root")
+  [[ -f "$parent/.omaclone-bootstrap" ]] && return 0
+  case "$root" in
+    /mnt/*|/media/*|/run/media/*) return 0 ;;
+  esac
+  return 1
+}
+
 omaclone_link_cli() {
+  if omaclone_root_is_kit; then
+    log "refusing to put a USB/NAS kit copy on PATH; install from git: omarchy plugin add $PLUGIN_REPO_URL --enable"
+    return 1
+  fi
   mkdir -p "$HOME/.local/bin"
   ln -sfn "$NAS_BACKUP_ROOT/scripts/omaclone" "$HOME/.local/bin/omaclone"
   ln -sfn "$HOME/.local/bin/omaclone" "$HOME/.local/bin/omarchy-backup"
@@ -43,6 +58,10 @@ omaclone_unlink_cli() {
 
 omaclone_link_plugin() {
   local dest root_real dest_real=""
+  if omaclone_root_is_kit; then
+    log "refusing to symlink the bar plugin to a USB/NAS kit copy; install from git: omarchy plugin add $PLUGIN_REPO_URL --enable"
+    return 1
+  fi
   dest=$(omaclone_plugin_dest)
   mkdir -p "$(dirname "$dest")"
   root_real=$(readlink -f "$NAS_BACKUP_ROOT")
@@ -270,6 +289,34 @@ setup_start_over() {
   config_set secrets.vault ""
   config_set secrets.item ""
   config_set secrets.field ""
+}
+
+setup_abandon_destination() {
+  local id
+  id=$(location_active_id 2>/dev/null || true)
+  if [[ -z "$id" ]]; then
+    id=$(location_ids 2>/dev/null | head -n1 || true)
+  fi
+  if [[ -n "$id" ]] && location_has "$id"; then
+    location_drop "$id"
+    return 0
+  fi
+  location_clear_live
+}
+
+setup_confirm_erase_all() {
+  require_gum
+  tui_error "This erases ALL Omaclone settings on this computer."
+  tui_note "Saved locations, password source, and destination config will be removed."
+  tui_note "Clone data on USB, NAS, or cloud is not deleted. This cannot be undone from Omaclone."
+  tui_confirm --default=false "I understand this erases all Omaclone settings" || return 1
+  local phrase
+  phrase=$(gum input --placeholder "Type ERASE SETTINGS to continue" </dev/tty) || return 1
+  if [[ "$phrase" != "ERASE SETTINGS" ]]; then
+    tui_note "Cancelled. Settings were not changed."
+    return 1
+  fi
+  return 0
 }
 
 retention_preset() {
@@ -712,14 +759,53 @@ mark_repo_initialized() {
 }
 
 setup_is_unfinished() {
-  local transport secrets
+  local transport secrets mp repo parent uuid
   transport=$(config_get transport.backend)
   [[ -n "$transport" ]] || return 1
   secrets=$(config_get secrets.backend)
   [[ -n "$secrets" ]] || return 0
-  repo_initialized || return 0
   [[ -z "$(config_get locations.ids)" ]] && return 0
-  return 1
+  repo_initialized && return 1
+  # A registered location whose destination is merely offline is not unfinished
+  # setup. Forgetting a USB stick must not offer erase-all that wipes NAS/cloud.
+  case "$transport" in
+    s3|sftp)
+      return 0
+      ;;
+    disk)
+      uuid=$(config_get transport.uuid)
+      if [[ -n "$uuid" && ! -e "/dev/disk/by-uuid/$uuid" ]]; then
+        return 1
+      fi
+      return 0
+      ;;
+    nfs)
+      mp=$(config_get transport.mountpoint)
+      [[ -n "$mp" ]] || return 1
+      findmnt -n -t nfs,nfs4 "$mp" >/dev/null 2>&1 || return 1
+      return 0
+      ;;
+    cifs)
+      mp=$(config_get transport.mountpoint)
+      [[ -n "$mp" ]] || return 1
+      findmnt -n -t cifs "$mp" >/dev/null 2>&1 || return 1
+      return 0
+      ;;
+    *)
+      mp=$(config_get transport.mountpoint)
+      repo=$(config_get restic.repo)
+      if [[ -n "$mp" && ! -d "$mp" ]]; then
+        return 1
+      fi
+      if [[ -n "$repo" && "$repo" == /* ]]; then
+        parent=$(dirname "$repo")
+        if [[ ! -e "$repo" && ! -d "$parent" ]]; then
+          return 1
+        fi
+      fi
+      return 0
+      ;;
+  esac
 }
 
 setup_is_configured() {
@@ -1274,11 +1360,11 @@ etc_rel_ok() {
   [[ "$rel" == ./* || "$rel" == */./* || "$rel" == */. ]] && return 1
   local base="${rel%%/*}"
   case "$base" in
-    fstab|crypttab|hostname|hosts|passwd|group|shadow|gshadow|machine-id|mkinitcpio.conf|cryptsetup-keys.d|systemd|pam.d|polkit-1|cron|cron.d|cron.daily|ssl|ssh)
+    fstab|crypttab|hostname|hosts|passwd|group|shadow|gshadow|machine-id|mkinitcpio.conf|cryptsetup-keys.d|systemd|pam.d|polkit-1|cron|cron.d|cron.daily|ssl|ssh|ld.so.preload|rc.local|environment|profile|profile.d|modprobe.d)
       return 1 ;;
   esac
   case "$rel" in
-    *limine*|*grub*|NetworkManager/*|ssh/*|sudoers|sudoers.d/*|systemd/*|pam.d/*|polkit-1/*|cron.d/*|ssl/*)
+    *limine*|*grub*|NetworkManager/*|ssh/*|sudoers|sudoers.d/*|systemd/*|pam.d/*|polkit-1/*|cron.d/*|ssl/*|ld.so.preload|profile.d/*|modprobe.d/*)
       return 1 ;;
   esac
   return 0
@@ -1343,7 +1429,7 @@ split_package_lists() {
     else
       printf '%s\n' "$pkg" >>"$dest/pkglist-identity.txt"
     fi
-  done < <(pacman -Qqe 2>/dev/null || true)
+  done < <(pacman -Qqen 2>/dev/null || true)
   pacman -Qqem 2>/dev/null >"$dest/pkglist-aur.txt" || true
 }
 

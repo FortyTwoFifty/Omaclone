@@ -214,8 +214,25 @@ sev=$(printf '%s' "$got" | jq -r '.severity')
 conn=$(printf '%s' "$got" | jq -r '.connected')
 title=$(printf '%s' "$got" | jq -r '.issueTitle')
 [[ "$conn" == "false" ]] || fail "missing uuid: expected connected false, got $conn"
-[[ "$sev" == "warning" ]] || fail "missing uuid: expected warning, got $sev"
-echo "$title" | grep -qi "not connected" || fail "missing uuid: issueTitle should mention not connected, got '$title'"
+[[ "$sev" == "ok" ]] || fail "unplugged USB must not warn, got $sev"
+[[ "$title" == "" ]] || fail "unplugged USB must not set issueTitle, got '$title'"
+
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.mode hot
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.backend disk
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.mode hot
+got=$("$ROOT/scripts/omaclone" status --json)
+sev=$(printf '%s' "$got" | jq -r '.severity')
+title=$(printf '%s' "$got" | jq -r '.issueTitle')
+[[ "$sev" == "warning" ]] || fail "unplugged hot extra disk should warn, got $sev"
+echo "$title" | grep -qi "not connected" || fail "hot extra disk: issueTitle should mention not connected, got '$title'"
+"$ROOT/scripts/omaclone" status --ack
+got=$("$ROOT/scripts/omaclone" status --json)
+sev=$(printf '%s' "$got" | jq -r '.severity')
+acked=$(printf '%s' "$got" | jq -r '.issueAcked')
+[[ "$acked" == "true" ]] || fail "warning ack: expected issueAcked true, got $acked"
+[[ "$sev" != "warning" ]] || fail "acked warning should clear, got $sev"
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.mode ""
+python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.mode ""
 
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.backend local
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.nas.uuid ""
@@ -594,7 +611,7 @@ python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.endpoint s3
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.bucket inprogress
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.preset aws
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set restic.repo "s3:s3.amazonaws.com/inprogress/omaclone"
-printf '%s\n' "$$" >"$NAS_BACKUP_STATE_DIR/destination.lock"
+location_destination_edit_begin
 "$ROOT/scripts/omaclone" status --json >/dev/null
 [[ "$(config_get transport.backend)" == s3 ]] || fail "status --json reverted in-progress s3 to $(config_get transport.backend)"
 [[ "$(config_get restic.repo)" == "s3:s3.amazonaws.com/inprogress/omaclone" ]] \
@@ -607,7 +624,7 @@ printf '%s\n' "$$" >"$NAS_BACKUP_STATE_DIR/destination.lock"
 # Destination lock also blocks location_sync_active (clone --cron during setup).
 location_sync_active
 [[ "$(config_get transport.backend)" == s3 ]] || fail "sync while locked reverted s3"
-rm -f "$NAS_BACKUP_STATE_DIR/destination.lock"
+location_destination_edit_end
 location_sync_active
 [[ "$(config_get transport.backend)" == nfs ]] || fail "sync after unlock should restore nas: $(config_get transport.backend)"
 
@@ -616,6 +633,7 @@ nfs_conn=$(awk '/if backend == "nfs":/,/if backend == "cifs":/' "$ROOT/scripts/l
 printf '%s\n' "$nfs_conn" | grep -q 'os.stat(' && fail "nfs connected() must not os.stat (wakes autofs)"
 cifs_conn=$(awk '/if backend == "cifs":/,/if backend == "local":/' "$ROOT/scripts/locations.sh")
 printf '%s\n' "$cifs_conn" | grep -q 'os.stat(' && fail "cifs connected() must not os.stat (wakes autofs)"
+grep -n 'os.stat(' "$ROOT/scripts/locations.sh" && fail "location connected() must not os.stat"
 
 # Nested destination lock: inner end must not drop setup/switch's lock.
 location_destination_edit_begin

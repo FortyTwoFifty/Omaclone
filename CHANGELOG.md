@@ -2,6 +2,12 @@
 
 ## 1.5.0
 
+- Kit `SHA256SUMS` covers `scripts/`, `backends/`, and `config/`. The outer USB/NAS `./restore` is hashed against `scripts/restore`. `omaclone install` will not put a kit copy on PATH or symlink the bar plugin to the stick.
+- Restore stages under `~/.local/share/omaclone/restore-staging` (not tmpfs). `--delete` honors `config/excludes.txt` and will not unlink the plugin tree. `etc.tar` is extracted with a path allowlist; `ld.so.preload` / `profile.d` / `modprobe.d` are refused. Identity pacman uses native packages only (`pacman -Qqen`). `--blank-omarchy` requires `OMACLONE_TEST=1`.
+- Proton Pass and 1Password CLIs must already be on PATH. Omaclone does not download or `eval` vendor installers (marketplace `curl-pipe-shell`).
+- User timers use a finite timeout (`6h` clone, `2h` prune), `NoNewPrivileges`, and `PrivateTmp`. Interactive sudo goes through `/dev/tty` with a FIDO reminder (not the Omaclone keyring).
+- Bar status keeps the last good snapshot on empty helper stdout; location id must match before JSON is applied. FileView watches disk UUID nodes only. Destination edits take a `flock` so status cannot clobber setup.
+- NFS/CIFS/disk mountpoints are canonicalized before the denylist (`/mnt/../../etc` is refused). Disk UUIDs must match `[0-9a-fA-F-]{8,36}` (no `../`). SFTP uses `ssh --` and rejects option-like usernames (`-oProxyCommand`). NFS URIs reject commas, like CIFS.
 - S3/cloud locations show a clone count from the last clone/prune (cached in `repo-stats-<id>.json`). Status does not list the bucket on every bar refresh, so it does not add S3 LIST/GET charges. Until a clone has run on this machine the tile stays a dash.
 - Setup is one question per screen. A one-line hint sits on the field it applies to (NFS Mapall, AWS IAM → README), rendered as plain gum text — not markdown cards stacked above the next picker. Full IAM JSON, Mapall walkthrough, and S3 restore details stay in the README.
 - Extra disk: USB/hotplug defaults to `udisksctl` (mount while cloning). A chosen path such as `/mnt/external-NVMe` is mounted during setup; sudo uses `/dev/tty` so gum does not steal the prompt. If that mount fails, udisks is used and setup continues (no “not ready” retry loop). Removable disks stay cold unless a systemd mount is opted in. Setup shows the mount error instead of swallowing it. `findmnt` miss on an unmounted disk no longer aborts `mount` under `pipefail`. The picker skips EFI, BIOS-boot, MSR, and sub-1G partitions when a larger volume exists, and sorts unmounted removable first. Clones always go in `<mount>/omaclone/` even if a leftover `repo/` sits at the volume root. FAT/exFAT/NTFS hot mounts set `uid`/`gid` so the kit is writable. Disk/CIFS `uid=` uses `command id` so the backend `id` verb cannot shadow it. Discover ignores `autofs` fstype so an NFS kit is not labeled `disk`.
@@ -17,7 +23,9 @@
 - S3 `pre-restic` keeps `$NAS_BACKUP_ENVFILE` so AWS keys actually reach restic. Backend processes do not shred that file on exit.
 - Failed S3 credentials are a password skip (warning chip), not a green “not mounted”.
 - `pre-restic` failures abort; restic is not run without AWS keys.
-- Setup **Start over** actually resets destination/secrets/locations. The restic repo on disk is not deleted.
+- USB/discovered locations keep a real name (volume label or `USB`), not `Discovered Omaclone`. Import does not overwrite a name you already chose.
+- Unplugged USB is not a warning. Other warnings can be dismissed from the pane.
+- Forgetting a location, or **Abandon this destination**, keeps other locations and the password source. **Erase all Omaclone settings** requires a default-off confirmation and typing `ERASE SETTINGS`. Clone data on disk is not deleted.
 - Extra disks with a mountpoint can enable the daily timer (`omaclone location schedule on|off`). USB/cold stays off by default.
 - Daily clones install timer units even if the PATH symlink already exists. Uninstall removes Super+Space keys we added.
 - Restore requires typing `RESTORE` (unless `--blank-omarchy`), verifies with restic, overlays by default, and needs `REPLACE` for `--delete`.
