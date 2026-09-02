@@ -26,7 +26,11 @@ rm -rf "$unitdir"
 nas_backup_backend_run transport nfs describe | grep -qi NFS || fail "nfs describe"
 nas_backup_transport_has nfs mount || fail "nfs should have mount capability"
 nas_backup_transport_has nfs remote && fail "nfs should not be remote"
-nas_backup_backend_available transport nfs || fail "nfs should be available when nfs-utils is installed"
+if command -v mount.nfs >/dev/null 2>&1 || command -v mount.nfs4 >/dev/null 2>&1; then
+  nas_backup_backend_available transport nfs || fail "nfs should be available when mount.nfs is on PATH"
+else
+  nas_backup_backend_available transport nfs && fail "nfs should not be available without mount.nfs"
+fi
 
 # --- NFS ready: missing mountpoint is not ready ---
 omaclone_test_cfg transport.backend nfs
@@ -212,7 +216,9 @@ fi
 exit 1
 EOF
 chmod +x "$tmpbin/sudo"
-# mount.cifs is not invoked directly; sudo mount -t cifs is.
+# available()/ensure_cifs_utils look for mount.cifs; the mount itself is sudo mount -t cifs.
+printf '#!/bin/sh\nexit 0\n' >"$tmpbin/mount.cifs"
+chmod +x "$tmpbin/mount.cifs"
 if ! PATH="$tmpbin:$PATH" nas_backup_backend_run transport cifs mount >/tmp/omaclone-cifs-mount.$$ 2>&1; then
   fail "cifs mount with stub sudo should succeed: $(cat /tmp/omaclone-cifs-mount.$$)"
 fi
