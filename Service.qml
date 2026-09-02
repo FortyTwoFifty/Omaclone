@@ -139,6 +139,10 @@ Item {
 
   function applyStatus(raw) {
     var parsed = Model.parseStatus(raw)
+    if (parsed && parsed.lastError === "Failed to parse backup status") {
+      root._pendingRefresh = true
+      return
+    }
     if (!Model.shouldApplyStatus(switching, locationId, parsed)) return
     configured = parsed.configured === true
     setupComplete = parsed.setupComplete === true
@@ -259,6 +263,10 @@ Item {
     switching = true
     _pendingRefresh = false
     _statusGen += 1
+    snapshotCount = -1
+    repoSizeText = "—"
+    repoSizeBytes = 0
+    packedSizeText = ""
     locationId = String(id)
     if (statusProc.running) statusProc.running = false
     watchdogTimer.restart()
@@ -302,9 +310,7 @@ Item {
       var stderr = String(statusStderr.text || "")
       if (stdout.trim() !== "") { root.applyStatus(stdout); root._fsWatchArmed = true; }
       else {
-        root.lastError = stderr.trim() || (exitCode !== 0 ? "Status helper failed" : "Failed to parse backup status")
-        root.severity = "error"
-        root.issueTitle = "Status unreadable"
+        root._pendingRefresh = true
       }
       root._statusFinished()
     }

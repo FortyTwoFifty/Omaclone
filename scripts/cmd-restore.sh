@@ -102,15 +102,49 @@ _restore_find_home() {
 }
 
 _restore_staging_dir() {
-  local base
-  if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" && -w "$XDG_RUNTIME_DIR" ]]; then
-    base="$XDG_RUNTIME_DIR"
-  else
-    base="$NAS_BACKUP_STATE_DIR/restore-staging"
-    mkdir -p "$base"
-    chmod 700 "$base"
-  fi
+  local base="$NAS_BACKUP_STATE_DIR/restore-staging"
+  mkdir -p "$base"
+  chmod 700 "$base"
   mktemp -d "$base/omaclone-restore.XXXXXX"
+}
+
+_restore_rsync_excludes() {
+  local line plugin_dir plugin_rel
+  if [[ -f "$ROOT/config/excludes.txt" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%%#*}"
+      line="${line#"${line%%[![:space:]]*}"}"
+      line="${line%"${line##*[![:space:]]}"}"
+      [[ -z "$line" ]] && continue
+      line="${line#/}"
+      printf '%s\n' "$line"
+    done <"$ROOT/config/excludes.txt" || true
+  fi
+  plugin_dir=$(omaclone_plugin_dest 2>/dev/null || true)
+  plugin_rel="${plugin_dir#"$HOME"/}"
+  if [[ -n "$plugin_dir" && "$plugin_rel" != "$plugin_dir" ]]; then
+    printf '%s\n' "$plugin_rel"
+  fi
+  printf '%s\n' ".config/omarchy/plugins"
+  return 0
+}
+
+_restore_extract_etc_tar() {
+  local tarfile="$1" dest="$2"
+  python3 - "$tarfile" "$dest" <<'PY'
+import os, sys, tarfile
+from pathlib import Path
+src, dest = Path(sys.argv[1]), Path(sys.argv[2])
+dest.mkdir(parents=True, exist_ok=True)
+with tarfile.open(src, "r:*") as tf:
+    for m in tf.getmembers():
+        name = m.name.replace("\\", "/")
+        if name.startswith("/") or name.startswith("../") or "/../" in name or name.endswith("/.."):
+            continue
+        if not (name == "etc" or name.startswith("etc/")):
+            continue
+        tf.extract(m, dest, set_attrs=False)
+PY
 }
 
 _restore_snapshot_line() {
@@ -123,7 +157,12 @@ cmd_restore() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --same-machine) same_machine=1 ;;
-      --blank-omarchy) blank=1 ;;
+      --blank-omarchy)
+        if [[ "${OMACLONE_TEST:-}" != 1 ]]; then
+          die "--blank-omarchy is only for tests; type RESTORE in the TUI"
+        fi
+        blank=1
+        ;;
       --delete|--replace) replace=1 ;;
       --snapshot)
         [[ $# -ge 2 ]] || die "omaclone restore --snapshot requires an ID"
@@ -146,7 +185,11 @@ cmd_restore() {
     _setup_secrets || return 1
   fi
   omaclone_acquire_lock
-  ensure_transport
+  if declare -F _setup_ensure_transport >/dev/null; then
+    _setup_ensure_transport || return 1
+  else
+    ensure_transport
+  fi
   password_load || return 1
   transport_prepare_env
 
@@ -208,7 +251,11 @@ cmd_restore() {
     [[ -z "$rel" ]] && continue
     rsync_excludes+=(--exclude "$rel")
   done < <(home_foreign_mounts)
-  local rsync_args=(-aH --info=progress2)
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    rsync_excludes+=(--exclude "$rel")
+  done < <(_restore_rsync_excludes)
+  local rsync_args=(-aH --info=progress2 --safe-links)
   if (( replace )); then
     rsync_args+=(--delete)
   fi
@@ -220,11 +267,12 @@ cmd_restore() {
   if etc_tar=$(staging_file etc.tar); then
     local etc_dir="$staging/etc-extract"
     mkdir -p "$etc_dir"
-    tar --no-same-owner --no-overwrite-dir -C "$etc_dir" -xf "$etc_tar"
+    _restore_extract_etc_tar "$etc_tar" "$etc_dir"
     local allow="$ROOT/config/etc-restore.allow"
     if (( same_machine )) || [[ "$(config_get restore.profile)" == same-machine ]]; then
       log "same-machine: still refusing fstab/Limine/LUKS; applying allowlist only"
     fi
+    tui_note "Restoring /etc with sudo — touch your FIDO key if prompted. This is not the Omaclone keyring."
     while IFS= read -r rel || [[ -n "$rel" ]]; do
       [[ -z "$rel" || "$rel" == \#* ]] && continue
       if ! etc_rel_ok "$rel"; then
@@ -240,9 +288,28 @@ cmd_restore() {
         log "skip /etc path containing symlinks: $rel"
         continue
       fi
+      if [[ -L "/etc/$rel" ]]; then
+        log "skip existing dest symlink /etc/$rel"
+        continue
+      fi
       if [[ -e "$src" ]]; then
-        sudo mkdir -p "/etc/$(dirname "$rel")"
-        sudo cp -a --no-dereference "$src" "/etc/$rel"
+        if declare -F sudo_tty >/dev/null; then
+          sudo_tty mkdir -p "/etc/$(dirname "$rel")"
+          if [[ -d "$src" ]]; then
+            sudo_tty mkdir -p "/etc/$rel"
+            sudo_tty cp -a --no-dereference "$src"/. "/etc/$rel"/
+          else
+            sudo_tty cp -a --no-dereference "$src" "/etc/$rel"
+          fi
+        else
+          sudo mkdir -p "/etc/$(dirname "$rel")"
+          if [[ -d "$src" ]]; then
+            sudo mkdir -p "/etc/$rel"
+            sudo cp -a --no-dereference "$src"/. "/etc/$rel"/
+          else
+            sudo cp -a --no-dereference "$src" "/etc/$rel"
+          fi
+        fi
         log "restored /etc/$rel"
       fi
     done <"$allow"
@@ -262,7 +329,12 @@ cmd_restore() {
       pkgs+=("$pkg")
     done <"$list"
     ((${#pkgs[@]})) || return 0
-    sudo pacman -S --needed --noconfirm -- "${pkgs[@]}"
+    if declare -F sudo_tty >/dev/null; then
+      tui_note "Installing packages with sudo — touch your FIDO key if prompted. This is not the Omaclone keyring."
+      sudo_tty pacman -S --needed --noconfirm -- "${pkgs[@]}"
+    else
+      sudo pacman -S --needed --noconfirm -- "${pkgs[@]}"
+    fi
   }
 
   local idlist

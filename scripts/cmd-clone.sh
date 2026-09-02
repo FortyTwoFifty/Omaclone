@@ -254,6 +254,7 @@ cmd_copy() {
   fi
   location_has "$dest_id" || die "unknown location: $dest_id"
   [[ "$dest_id" != "$src_id" ]] || die "already on location '$dest_id'"
+  location_destination_edit_begin
   location_prepare_mount "$dest_id" || die "location '$dest_id' is not connected"
   local dest_backend dest_repo src_repo
   dest_backend=$(location_get "$dest_id" backend)
@@ -265,7 +266,7 @@ cmd_copy() {
   need_cmd restic
   omaclone_acquire_lock
   ensure_transport
-  password_load || return 1
+  password_load || { location_destination_edit_end; return 1; }
   transport_prepare_env
   src_repo=$(restic_repo)
   [[ -n "$src_repo" ]] || die "active restic.repo is not set"
@@ -280,5 +281,6 @@ cmd_copy() {
     --tag identity
   password_cleanup
   finish_transport
+  location_destination_edit_end
   log "copied identity clones to '$dest_id'"
 }

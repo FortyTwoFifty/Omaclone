@@ -38,7 +38,7 @@ function parseStatus(raw) {
     var parsed = JSON.parse(text)
     if (!parsed || typeof parsed !== "object") return defaultStatus()
     var base = defaultStatus()
-    for (var key in parsed) {
+    for (var key in base) {
       if (Object.prototype.hasOwnProperty.call(parsed, key))
         base[key] = parsed[key]
     }
@@ -53,11 +53,12 @@ function parseStatus(raw) {
 }
 
 function shouldApplyStatus(switching, targetId, parsed) {
-  if (!switching) return true
-  if (!parsed || typeof parsed !== "object") return false
+  if (!parsed || typeof parsed !== "object") return !switching
   var got = String(parsed.locationId || "")
   var want = String(targetId || "")
-  return want !== "" && got === want
+  if (want !== "" && got !== "" && got !== want) return false
+  if (switching) return want !== "" && got === want
+  return true
 }
 
 function installedLocations(list) {

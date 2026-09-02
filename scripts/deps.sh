@@ -63,17 +63,11 @@ deps_ensure_core() {
 
 deps_curl_install() {
   local label="$1"
-  local cmd="$2"
-
-  echo "The $label installer will be downloaded and executed." >&2
-  echo "This download is not checksum-pinned; prefer installing $label yourself from the vendor if you can." >&2
-  echo "Command: $cmd" >&2
-  if ! gum confirm "Allow this?"; then
-    return 1
-  fi
-  eval "$cmd" || {
-    die "failed to install $label — re-run: omaclone setup"
-  }
+  # Marketplace listing forbids download-then-eval of vendor install.sh.
+  # Omaclone never runs a remote installer; put the CLI on PATH yourself.
+  echo "Omaclone does not download or run the $label installer." >&2
+  echo "Install $label from the vendor, then re-run: omaclone setup" >&2
+  return 1
 }
 
 _deps_arch_map() {

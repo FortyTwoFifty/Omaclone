@@ -9,7 +9,7 @@ omaclone never hard-codes Proton Pass, NFS, or a vendor. It discovers executable
 
 `kind` is `secrets`, `transport`, or `notify`. The file must be executable. First argument is the verb. stdout is data; stderr is messages; exit 0 is success. **Never print secrets to stderr, the journal, or argv.**
 
-The setup wizard lists **all** shipped backends; unavailable ones are labeled `[not installed]`. When you pick one, the wizard installs its CLI (pacman for distro packages, curl installers for `op`/`pass-cli`) before continuing. Backends whose `available` exits 0 are always shown as available.
+The setup wizard lists **all** shipped backends; unavailable ones are labeled `[not installed]`. When you pick one, the wizard installs distro packages with pacman. `op` and `pass-cli` must already be on PATH (Omaclone does not download vendor installers). Backends whose `available` exits 0 are always shown as available. A file in `~/.config/omaclone/backends/` with the same name as a shipped backend wins; setup warns when that happens.
 
 ## Secrets
 
@@ -23,7 +23,7 @@ The setup wizard lists **all** shipped backends; unavailable ones are labeled `[
 | `get` | Print **only** the restic password on stdout. The core writes that onto a `600` tmpfs file, then unlinks it and passes restic `/dev/fd/N` so the secret is not a named file in `ps`. |
 | `put` | Optional. Read the password from stdin and store it. `prompt` must not implement this. |
 | `unlock` | Optional. Interactive sign-in for the password manager. Not a secret. Attach stdio to /dev/tty. Exit 2 if unsupported. |
-| `install` | Optional. Install missing CLI dependencies (e.g., pacman for libsecret, curl zip for `op`). Exit 0 if already available or no install needed. Called by the wizard before `setup`. |
+| `install` | Optional. Install missing CLI dependencies (pacman for distro packages). Exit 0 if already available or no install needed. Do not download-and-eval vendor `install.sh`. Called by the wizard before `setup`. |
 | `update` | Optional. Install a newer version of the CLI tool when it reports an update is available. Attach stdio to /dev/tty. Exit 2 if unsupported. |
 
 Environment provided by the loader: `NAS_BACKUP_ROOT`, `NAS_BACKUP_CONFIG`, `NAS_BACKUP_USER_CONFIG_DIR`.

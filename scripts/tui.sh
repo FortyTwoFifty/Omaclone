@@ -31,7 +31,14 @@ tui_error() {
 }
 
 tui_confirm() {
-  gum confirm "$1"
+  local -a gum_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --default=false|--default=true) gum_args+=("$1"); shift ;;
+      *) break ;;
+    esac
+  done
+  gum confirm "${gum_args[@]}" "$1"
 }
 
 # One plain-text hint per line. No markdown, no titles — those stack above

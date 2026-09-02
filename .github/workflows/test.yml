@@ -23,7 +23,15 @@ jobs:
       - name: Shellcheck (errors only)
         run: |
           shellcheck --severity=error scripts/omaclone scripts/cmd-*.sh scripts/lib.sh scripts/restore \
-            || echo "shellcheck reported issues (non-fatal unless --severity=error fails)"
+            scripts/deps.sh scripts/backend.sh scripts/tui.sh scripts/nfs-lib.sh scripts/transport-lib.sh \
+            scripts/install-disk-mount.sh scripts/launch-tui.sh
+      - name: Plugin validate (when omarchy is installed)
+        run: |
+          if command -v omarchy >/dev/null 2>&1; then
+            omarchy plugin validate .
+          else
+            echo "SKIP omarchy plugin validate (omarchy not on PATH in this runner)"
+          fi
       - name: Pull MinIO
         run: docker pull minio/minio:latest
       - name: Run tests

@@ -6,7 +6,9 @@ Conflicts=omaclone-prune.service
 
 [Service]
 Type=oneshot
-TimeoutStartSec=infinity
+TimeoutStartSec=6h
+NoNewPrivileges=yes
+PrivateTmp=yes
 ExecStart=%h/.local/bin/omaclone clone --cron
 Nice=10
 IOSchedulingClass=idle

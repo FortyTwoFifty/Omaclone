@@ -39,7 +39,7 @@ def plugin_version(root: Path) -> str:
 
 def iter_hash_rels(root: Path) -> list[str]:
     rels: list[str] = []
-    for base in ("scripts", "backends"):
+    for base in ("scripts", "backends", "config"):
         directory = root / base
         if not directory.is_dir():
             continue

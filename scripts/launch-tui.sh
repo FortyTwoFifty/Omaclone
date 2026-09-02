@@ -11,7 +11,11 @@ debug() {
   printf '%s\n' "$*" >>"$LOG"
 }
 
-cmd="$*"
+cmd=""
+for _arg in "$@"; do
+  cmd+=$(printf '%q ' "$_arg")
+done
+cmd="${cmd% }"
 [[ -n "$cmd" ]] || exit 1
 
 if [[ -n "${OMACLONE_DEBUG:-}" ]]; then

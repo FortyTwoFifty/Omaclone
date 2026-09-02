@@ -583,6 +583,12 @@ def cmd_recreate() -> int:
         password = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         return _die(str(exc))
+    label = _collection_label()
+    if _forbidden_collection_label(label):
+        return _die(
+            f"refusing to recreate a collection named {label!r}; that is the "
+            "desktop keyring"
+        )
     if _file_store_dir() is not None:
         try:
             os.makedirs(_file_store_dir() or "", mode=0o700, exist_ok=True)
@@ -601,7 +607,7 @@ def cmd_recreate() -> int:
             (
                 {
                     "org.freedesktop.Secret.Collection.Label": GLib.Variant(
-                        "s", _collection_label()
+                        "s", label
                     )
                 },
                 (session_path, b"", password.encode("utf-8"), "text/plain"),

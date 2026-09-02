@@ -5,6 +5,22 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 grep -q 'StrictHostKeyChecking=yes' "$ROOT/backends/transport/sftp" \
   || fail "sftp should force StrictHostKeyChecking=yes"
+grep -q ' -- "' "$ROOT/backends/transport/sftp" \
+  || fail "sftp ssh must use -- before user@host"
+grep -q '_sftp_ident_ok' "$ROOT/backends/transport/sftp" \
+  || fail "sftp must reject option-like usernames"
+
+_sftp_ident_ok() {
+  local s="${1:-}"
+  [[ -n "$s" ]] || return 1
+  [[ "$s" != -* ]] || return 1
+  [[ "$s" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+_sftp_ident_ok "bp" || fail "normal user should pass"
+_sftp_ident_ok "nas.example" || fail "hostname should pass"
+_sftp_ident_ok "-oProxyCommand=evil" && fail "ProxyCommand username must fail"
+_sftp_ident_ok "user;id" && fail "metachar username must fail"
+_sftp_ident_ok "" && fail "empty username must fail"
 grep -q 'remote_path "omaclone"' "$ROOT/backends/transport/sftp" \
   || fail "sftp default remote path should be omaclone, not /backup/omarchy"
 if grep -q '/backup/omarchy' "$ROOT/backends/transport/sftp"; then

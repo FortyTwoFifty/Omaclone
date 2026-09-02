@@ -4,6 +4,10 @@
 
 amd-ucode
 intel-ucode
+linux
+linux-lts
+linux-zen
+linux-hardened
 linux-firmware
 linux-firmware-*
 

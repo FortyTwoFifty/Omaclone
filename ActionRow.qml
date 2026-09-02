@@ -38,6 +38,7 @@ CursorSurface {
       Layout.fillWidth: true
       spacing: Style.space(1)
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         text: action ? action.title : ""
         color: panel ? panel.foreground : Color.foreground
@@ -46,6 +47,7 @@ CursorSurface {
         elide: Text.ElideRight
       }
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         text: action ? action.subtitle : ""
         color: panel ? panel.dim : Color.foreground

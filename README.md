@@ -37,7 +37,7 @@ Setup installs any missing **required** packages at start. Destination, password
 omarchy bar move omaclone.plugin --section right
 ```
 
-`omaclone setup` writes `~/.config/omaclone/config.toml` only after you confirm each step. It does not overwrite an existing restic repository.
+`omaclone setup` writes `~/.config/omaclone/config.toml` as you go (destination, then secrets, then location). It does not overwrite an existing restic repository. The restic password is never written to that file; if you pick GNOME Keyring, it is stored in Omaclone’s own keyring collection.
 
 ### Remove
 
@@ -46,9 +46,13 @@ omaclone uninstall
 omarchy plugin remove omaclone.plugin
 ```
 
-Run `uninstall` first while the plugin tree is still present. It removes the PATH command and daily/prune timers. `omarchy plugin remove omaclone.plugin` unloads the bar widget. If you never ran setup, only the second command is needed.
+Run `uninstall` first while the plugin tree is still present. It removes the PATH command, daily/prune timers, and Super+Space menu keys we added. `omarchy plugin remove omaclone.plugin` unloads the bar widget. If you never ran setup, only the second command is needed.
 
-Neither command deletes `~/.config/omaclone`, `~/.local/share/omaclone`, or clones stored on NAS, disk, or cloud. NFS systemd mount units created during setup stay until you disable them. Extra disks do not get systemd mount units unless you add them yourself.
+Neither command deletes `~/.config/omaclone`, `~/.local/share/omaclone`, or clones stored on NAS, disk, or cloud. Leftovers you may still want to clear:
+
+- NFS/disk **system** units in `/etc/systemd/system` (needs sudo; `systemctl disable --now` the `.mount` / `.automount`, then remove the unit files)
+- lingering user session (`loginctl disable-linger $USER`) so timers do not run after logout
+- extra-disk systemd mounts, only if you opted in during setup
 
 ---
 
@@ -56,7 +60,7 @@ Neither command deletes `~/.config/omaclone`, `~/.local/share/omaclone`, or clon
 
 Omaclone is MIT-licensed ([LICENSE](LICENSE)). It needs a normal Omarchy box (bash, systemd, `python3`, `util-linux`). Everything else is listed below.
 
-The wizard installs missing **required** packages with `sudo pacman -S --needed`. Optional backend CLIs are labeled `[not installed]` until you pick that destination or secrets source. Pacman packages are installed from the distro repos. 1Password (`op`) and Proton Pass (`pass-cli`) use their official installers; you confirm before any remote download.
+The wizard installs missing **required** packages with `sudo pacman -S --needed`. Optional backend CLIs are labeled `[not installed]` until you pick that destination or secrets source. Pacman packages are installed from the distro repos. 1Password (`op`) and Proton Pass (`pass-cli`) must already be on PATH; Omaclone does not download or run their vendor installers.
 
 ### Required
 
@@ -66,7 +70,7 @@ The wizard installs missing **required** packages with `sudo pacman -S --needed`
 | `jq` | JSON | Status, locations, bar pane |
 | `gum` | TUI | Setup, restore, and confirmations. Ships with Omarchy |
 | `rsync` | File copy | Staging dumps and bootstrap kit |
-| `curl` | HTTP | Core setup; also used by the optional `op` / `pass-cli` installers |
+| `curl` | HTTP | Core setup (S3 probes) |
 | `python` | `python3` | `config.toml` and disk/bootstrap helpers. Already on Omarchy; not auto-installed |
 
 `findmnt` and `lsblk` come from `util-linux` (base). `sudo` is used for pacman and, if you choose NFS or an extra disk, for systemd `.mount` / `.automount` units.
@@ -91,8 +95,8 @@ Pick one in setup. Paste-each-time needs nothing extra and cannot run from the d
 | Backend | Package / CLI | Install |
 |---|---|---|
 | GNOME Keyring | `libsecret` + `python-gobject` | pacman. Restic / S3 / SMB secrets go in a dedicated Omaclone collection, not the default desktop keyring |
-| 1Password | `op` | Official zip from AgileBits into `~/.local/bin/op` (needs `unzip`) |
-| Proton Pass | `pass-cli` | Official installer from proton.me, after confirmation |
+| 1Password | `op` | Install the CLI yourself from 1Password’s docs, then pick it in setup |
+| Proton Pass | `pass-cli` | Install `pass-cli` yourself from Proton, then pick it in setup |
 | Prompt each time | — | No extra CLI |
 
 ### Optional — notifications
@@ -109,7 +113,7 @@ Pick one in setup. Paste-each-time needs nothing extra and cannot run from the d
 
 ## First-time setup
 
-`omaclone setup` is a gum TUI. It never writes the restic password to disk. Each screen is one question. A one-line hint appears only on the field it applies to (for example Mapall next to the NFS URI, IAM next to the AWS bucket). `omaclone location add` uses the same flow. Walkthroughs and copy-paste policy JSON are in [Destinations](#destinations) and [Security](#security) below. Omaclone does not create NAS shares, S3 buckets, or IAM users.
+`omaclone setup` is a gum TUI. It never writes the restic password to `config.toml`. GNOME Keyring stores it in Omaclone’s collection when you choose that backend. Each screen is one question. A one-line hint appears only on the field it applies to (for example Mapall next to the NFS URI, IAM next to the AWS bucket). `omaclone location add` uses the same flow. Walkthroughs and copy-paste policy JSON are in [Destinations](#destinations) and [Security](#security) below. Omaclone does not create NAS shares, S3 buckets, or IAM users.
 
 1. **Create a clone** or **restore from an existing one**.
 2. **Where it lives**
@@ -157,7 +161,7 @@ Do not convert a browse-only SMB mount to NFS just to fix this. Use a dedicated 
 /path/to/clone/restore
 ```
 
-That launcher lives next to the encrypted restic repo (`RESTORE.md` + `config.toml` + `SHA256SUMS` + `./restore`). It has **no passwords**. Prefer a plugin install from git; a kit copy that does not match `SHA256SUMS` asks you to type `UNTRUSTED`.
+That launcher lives next to the encrypted restic repo (`RESTORE.md` + `config.toml` + `SHA256SUMS` + `./restore`). It has **no passwords**. Prefer a plugin install from git; a kit copy that does not match `SHA256SUMS` (scripts, backends, and `config/` allowlists) asks you to type `UNTRUSTED`. The outer `./restore` file is hashed against `scripts/restore`. An interactive kit restore asks you to type `TRUST` before using that copy’s host or bucket.
 
 **Cloud, or you only have this plugin:**
 
@@ -340,7 +344,7 @@ Edit `config/excludes.txt` (gitignore-style, relative to `$HOME`) and `config/ha
 - Three different secrets: the **restic password** (encrypts the clone; lose it and snapshots are gone), the **Omaclone keyring password** (unwraps `omaclone.keyring`; not FIDO; asked in the terminal), and **transport secrets** (S3 keys, SMB password) in that same collection. Do not mix them up.
 - SMB passwords and S3 keys use Omaclone’s own GNOME Keyring collection (or a prompt). Never the default desktop keyring, never `mount.cifs` argv. Writing to an unencrypted default keyring can make gnome-keyring refuse to load it after a secret with a newline is stored (Proton VPN and similar), which drops every other app’s saved passwords.
 - Do not reuse login, LUKS, or password-manager master passwords for the restic repo.
-- Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`) contain **no secrets**. `SHA256SUMS` covers the scripts and backends the kit will execute; it is not a signature. Prefer `omarchy plugin add` from git. The recovery card includes a kit tree digest you can compare.
+- Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`) contain **no secrets**. `SHA256SUMS` covers `scripts/`, `backends/`, and `config/` (excludes, `/etc` allowlist, hardware skip, unit deny). It is not a signature. Prefer `omarchy plugin add` from git. `omaclone install` refuses to put a USB/NAS kit copy on PATH or symlink the bar plugin to the stick.
 - Prep never runs `sudo` on a script in the plugin tree. `/etc` collection is `sudo tar` with a fixed argv, written into a fresh staging directory as the user.
 - LUKS headers are not collected.
 
@@ -394,6 +398,7 @@ OMACLONE_DISK_LIVE=1 ./tests/test-disk-live.sh   # opt-in; needs a plugged extra
 ./tests/test-secrets-retry.sh
 ./tests/test-keyring-store.sh
 ./tests/test-install.sh
+./tests/test-restore-safety.sh
 ./tests/test-units.sh
 ./tests/test-cron-skip.sh
 ./tests/test-restic-roundtrip.sh

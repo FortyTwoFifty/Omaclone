@@ -22,8 +22,8 @@ ensure_nfs_utils() {
   if command -v mount.nfs4 >/dev/null 2>&1 || command -v mount.nfs >/dev/null 2>&1; then
     return 0
   fi
-  echo "Installing nfs-utils…" >&2
-  sudo pacman -S --needed --noconfirm nfs-utils
+  echo "Installing nfs-utils with sudo — touch your FIDO key if prompted. This is not the Omaclone keyring." >&2
+  sudo_tty pacman -S --needed --noconfirm nfs-utils
 }
 
 _nfs_type() {

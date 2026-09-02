@@ -11,6 +11,10 @@ capabilities() { printf '%s\n' "mount removable discover"; }
 
 _disk_uuid_src() {
   local uuid="$1"
+  omaclone_disk_uuid_ok "$uuid" || {
+    printf '%s\n' "invalid disk UUID" >&2
+    return 1
+  }
   printf '%s/%s\n' "${OMACLONE_DISK_BY_UUID_DIR:-/dev/disk/by-uuid}" "$uuid"
 }
 
@@ -201,12 +205,17 @@ _disk_bind_repo() {
 }
 
 _disk_find_live() {
-  local src="$1" mountpoint="${2:-}" target
+  local src="$1" mountpoint="${2:-}" target source want got
+  want=$(readlink -f "$src" 2>/dev/null || printf '%s' "$src")
   if [[ -n "$mountpoint" ]]; then
     target=$(findmnt -n -o TARGET "$mountpoint" 2>/dev/null | head -n 1 || true)
-    if [[ "$target" == "$mountpoint" ]]; then
-      printf '%s\n' "$mountpoint"
-      return 0
+    source=$(findmnt -n -o SOURCE "$mountpoint" 2>/dev/null | head -n 1 || true)
+    if [[ "$target" == "$mountpoint" && -n "$source" ]]; then
+      got=$(readlink -f "$source" 2>/dev/null || printf '%s' "$source")
+      if [[ "$source" == "$src" || "$got" == "$want" ]]; then
+        printf '%s\n' "$mountpoint"
+        return 0
+      fi
     fi
   fi
   findmnt -n -o TARGET -S "$src" 2>/dev/null | head -n 1 || true

@@ -6,5 +6,7 @@ Conflicts=omaclone.service omaclone-keyring-retry.service
 
 [Service]
 Type=oneshot
-TimeoutStartSec=infinity
+TimeoutStartSec=2h
+NoNewPrivileges=yes
+PrivateTmp=yes
 ExecStart=%h/.local/bin/omaclone prune --cron

@@ -106,6 +106,16 @@ uuid_fat="6A73-E22F"
 [[ "$uuid_fat" =~ ^[0-9a-fA-F-]{8,36}$ ]] || fail "FAT-style UUID should match install-disk-mount regex"
 echo "PASS: FAT-style UUID 6A73-E22F is valid"
 
+source "$ROOT/scripts/transport-lib.sh"
+omaclone_disk_uuid_ok "$uuid_fat" || fail "FAT UUID should pass omaclone_disk_uuid_ok"
+omaclone_disk_uuid_ok "../../sda1" && fail "path UUID must fail"
+omaclone_disk_uuid_ok ".." && fail "dotdot UUID must fail"
+omaclone_validate_mountpoint "/mnt/../../etc" >/dev/null && fail "disk mount over /etc via .. must fail"
+echo "PASS: disk UUID and mountpoint reject path traversal"
+
+grep -q 'readlink -f' "$ROOT/backends/transport/disk" \
+  || fail "disk live mount must match UUID source, not any filesystem at the mountpoint"
+
 grep -q 'omaclone/repo' "$ROOT/backends/transport/disk" || fail "disk should default restic.repo under omaclone/"
 echo "PASS: disk restic.repo uses omaclone/ kit dir"
 
@@ -122,7 +132,7 @@ echo "PASS: omaclone_kit_dir is <mount>/omaclone"
 FAKE_DEV_TREE=$(mktemp -d)
 trap 'rm -rf "$NAS_BACKUP_USER_CONFIG_DIR" "$MOCK_BIN" "$FAKE_DEV_TREE"' EXIT
 mkdir -p "$FAKE_DEV_TREE/disk/by-uuid"
-touch "$FAKE_DEV_TREE/disk/by-uuid/test-uuid"
+touch "$FAKE_DEV_TREE/disk/by-uuid/AAAA-1111"
 
 _ready() {
   local uuid live_target
@@ -169,7 +179,7 @@ cfg_set transport.uuid "missing-node"
 if _ready; then fail "ready should be false when UUID node absent"; fi
 echo "PASS: ready=false with missing node"
 
-cfg_set transport.uuid "test-uuid"
+cfg_set transport.uuid "AAAA-1111"
 TEST_MOUNTS_FILE=$(mktemp)
 export TEST_MOUNTS_FILE
 echo "/run/media/user/Disk" > "$TEST_MOUNTS_FILE"
@@ -184,7 +194,7 @@ _ready || fail "ready should be true with different live target"
 echo "PASS: ready=true when configured mp differs from live TARGET"
 
 rm -f "$MOUNT_LOG"
-cfg_set transport.uuid "test-uuid"
+cfg_set transport.uuid "AAAA-1111"
 TEST_MOUNTS_FILE=$(mktemp)
 export TEST_MOUNTS_FILE
 echo "/run/media/user/Disk" > "$TEST_MOUNTS_FILE"
@@ -195,7 +205,7 @@ echo "PASS: mount skips remount when live TARGET exists"
 rm -f "$MOUNT_LOG"
 preferred_mp="$NAS_BACKUP_USER_CONFIG_DIR/mnt"
 mkdir -p "$preferred_mp"
-cfg_set transport.uuid "test-uuid"
+cfg_set transport.uuid "AAAA-1111"
 cfg_set transport.mountpoint "$preferred_mp"
 TEST_MOUNTS_FILE=""
 export TEST_MOUNTS_FILE
@@ -217,7 +227,7 @@ touch "$fake_live/repo/config"
 TEST_MOUNTS_FILE=$(mktemp)
 export TEST_MOUNTS_FILE
 echo "$fake_live" > "$TEST_MOUNTS_FILE"
-cfg_set transport.uuid "test-uuid"
+cfg_set transport.uuid "AAAA-1111"
 cfg_set transport.mountpoint ""
 cfg_set transport.mode cold
 cfg_set restic.repo "$fake_live/repo"

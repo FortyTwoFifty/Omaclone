@@ -22,8 +22,10 @@ omaclone_test_env() {
   export OMACLONE_SKIP_DISCOVER=1
   export OMACLONE_SKIP_PREP=1
   export OMACLONE_SKIP_BOOTSTRAP=1
+  export OMACLONE_TEST=1
   unset NAS_BACKUP_LIB_LOADED OMACLONE_LOCATIONS_LOADED NAS_BACKUP_BACKEND_LOADED OMACLONE_DEPS_LOADED NAS_BACKUP_TUI_LOADED
   mkdir -p "$NAS_BACKUP_USER_CONFIG_DIR" "$NAS_BACKUP_STATE_DIR" "$home/.local/bin"
+  omaclone_test_file_keyring "$home/.omaclone-keyring"
   if declare -F omaclone_test_cleanup >/dev/null 2>&1; then
     :
   else

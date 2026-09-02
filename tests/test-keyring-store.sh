@@ -60,6 +60,7 @@ PY
 python3 - "$STORE" <<'PY' || fail "normalize_secret / default-collection unit tests"
 import importlib.util
 import os
+import pathlib
 import sys
 spec = importlib.util.spec_from_file_location("keyring_store", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
@@ -121,6 +122,11 @@ assert not mod._is_default_collection(
 assert mod._forbidden_collection_label("login")
 assert mod._forbidden_collection_label("Default keyring")
 assert not mod._forbidden_collection_label("omaclone")
+src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+assert "cmd_recreate" in src
+# recreate must refuse desktop-collection labels before CreateWithMasterPassword
+recreate = src.split("def cmd_recreate", 1)[1].split("\ndef ", 1)[0]
+assert "_forbidden_collection_label" in recreate, "cmd_recreate must check forbidden labels"
 
 
 class FakeSecret:

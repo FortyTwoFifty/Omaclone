@@ -155,7 +155,6 @@ ready() {
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
   repo=$(cfg restic.repo)
   [[ -n "$repo" ]] || return 1
-  mount_wake "$mountpoint"
   mount_is_type "$mountpoint" cifs
 }
 

@@ -5,7 +5,9 @@ Conflicts=omaclone.service omaclone-prune.service
 
 [Service]
 Type=oneshot
-TimeoutStartSec=infinity
+TimeoutStartSec=30min
+NoNewPrivileges=yes
+PrivateTmp=yes
 ExecStart=%h/.local/bin/omaclone wait-keyring
 Nice=10
 IOSchedulingClass=idle

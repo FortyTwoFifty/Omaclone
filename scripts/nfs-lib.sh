@@ -10,6 +10,18 @@ if ! declare -F sudo_noninteractive >/dev/null 2>&1; then
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/transport-lib.sh"
 fi
 
+_nfs_sudo_note() {
+  if [[ -z "${_NFS_SUDO_NOTED:-}" ]]; then
+    printf '%s\n' "sudo — touch your FIDO key if prompted. This is not the Omaclone keyring." >&2
+    _NFS_SUDO_NOTED=1
+  fi
+}
+
+_nfs_sudo() {
+  _nfs_sudo_note
+  sudo_tty "$@"
+}
+
 NFS_HOST=""
 NFS_EXPORT=""
 
@@ -32,7 +44,6 @@ nfs_mount_options_fallback() {
 nfs_share_is_live() {
   local mp="${1:-}"
   [[ -n "$mp" ]] || return 1
-  mount_wake "$mp"
   mount_is_type "$mp" "nfs,nfs4"
 }
 
@@ -160,32 +171,18 @@ nfs_validate_uri() {
     printf '%s\n' "NFS export path must be absolute (got '${NFS_EXPORT}')." >&2
     return 1
   fi
+  if [[ "$uri" == *','* ]]; then
+    printf '%s\n' "NFS URI must not contain commas (they become extra mount options)." >&2
+    return 1
+  fi
   return 0
 }
 
 nfs_validate_mountpoint() {
-  local mp
+  local mp resolved
   mp=$(nfs_trim "${1:-}")
-  if [[ -z "$mp" ]]; then
-    printf '%s\n' "Mountpoint is required (example: /mnt/omaclone)." >&2
-    return 1
-  fi
-  mp="${mp%/}"
-  [[ -n "$mp" ]] || mp="/"
-  if [[ "$mp" != /* ]]; then
-    printf '%s\n' "Mountpoint must be an absolute path (example: /mnt/omaclone)." >&2
-    return 1
-  fi
-  if [[ "$mp" == //* || "$mp" == *' '* || "$mp" == *$'\n'* ]]; then
-    printf '%s\n' "Mountpoint must be a single absolute path without spaces." >&2
-    return 1
-  fi
-  case "$mp" in
-    /|/mnt|/home|/usr|/etc|/boot|/var|/root|/opt|/tmp|/dev|/proc|/sys|/run)
-      printf '%s\n' "Refusing to mount over $mp — pick a dedicated directory (example: /mnt/omaclone)." >&2
-      return 1
-      ;;
-  esac
+  resolved=$(omaclone_validate_mountpoint "$mp") || return 1
+  [[ -n "$resolved" ]] || return 1
   return 0
 }
 
@@ -320,11 +317,19 @@ nfs_probe_mount() {
   tmp=$(mktemp -d /tmp/omaclone-nfs-probe.XXXXXX)
   fstype=$(nfs_fstype)
   set +e
+  _nfs_sudo_note
   if command -v timeout >/dev/null 2>&1; then
-    timeout 15 sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp"
+    # timeout(1) cannot run a bash function; bind sudo to /dev/tty like sudo_tty.
+    if [[ -e /dev/tty && -r /dev/tty && -w /dev/tty ]] && { [[ -t 0 || -t 1 || -t 2 ]]; }; then
+      timeout 15 sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp" <>/dev/tty 2>/dev/tty
+    elif [[ -t 0 && -t 1 ]]; then
+      timeout 15 sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp"
+    else
+      timeout 15 sudo -n mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp"
+    fi
     rc=$?
   else
-    sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp"
+    _nfs_sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp"
     rc=$?
   fi
   if (( rc == 0 )); then
@@ -335,7 +340,7 @@ nfs_probe_mount() {
     fi
     rc=$?
   fi
-  sudo umount -l "$tmp" 2>/dev/null || true
+  _nfs_sudo umount -l "$tmp" 2>/dev/null || true
   rmdir "$tmp" 2>/dev/null || true
   set -e
   if (( rc != 0 )); then
@@ -365,11 +370,11 @@ nfs_rollback_units() {
   nfs_unit_names "$mountpoint"
   unit_name="$NFS_MOUNT_UNIT"
   auto_name="$NFS_AUTO_UNIT"
-  sudo systemctl disable --now "$auto_name" >/dev/null 2>&1 || true
-  sudo systemctl stop "$unit_name" >/dev/null 2>&1 || true
-  sudo umount -l "$mountpoint" >/dev/null 2>&1 || true
-  sudo rm -f "$unit_dir/$unit_name" "$unit_dir/$auto_name"
-  sudo systemctl daemon-reload >/dev/null 2>&1 || true
+  _nfs_sudo systemctl disable --now "$auto_name" >/dev/null 2>&1 || true
+  _nfs_sudo systemctl stop "$unit_name" >/dev/null 2>&1 || true
+  _nfs_sudo umount -l "$mountpoint" >/dev/null 2>&1 || true
+  _nfs_sudo rm -f "$unit_dir/$unit_name" "$unit_dir/$auto_name"
+  _nfs_sudo systemctl daemon-reload >/dev/null 2>&1 || true
   printf '%s\n' "removed $auto_name and $unit_name (share was not available)" >&2
 }
 
@@ -406,18 +411,18 @@ nfs_install_automount() {
 
   tmp=$(mktemp -d)
   nfs_write_unit_files "$uri" "$mountpoint" "$tmp"
-  sudo mkdir -p "$mountpoint"
-  sudo cp "$tmp/$unit_name" "$tmp/$auto_name" "$unit_dir/"
+  _nfs_sudo mkdir -p "$mountpoint"
+  _nfs_sudo cp "$tmp/$unit_name" "$tmp/$auto_name" "$unit_dir/"
   rm -rf "$tmp"
-  sudo systemctl daemon-reload
+  _nfs_sudo systemctl daemon-reload
 
-  if ! sudo systemctl enable --now "$auto_name"; then
+  if ! _nfs_sudo systemctl enable --now "$auto_name"; then
     printf '%s\n' "failed to enable $auto_name" >&2
     nfs_rollback_units "$mountpoint" "$unit_dir"
     return 1
   fi
 
-  if ! sudo systemctl start "$unit_name"; then
+  if ! _nfs_sudo systemctl start "$unit_name"; then
     printf '%s\n' "automount enabled but $unit_name did not start" >&2
     nfs_rollback_units "$mountpoint" "$unit_dir"
     return 1

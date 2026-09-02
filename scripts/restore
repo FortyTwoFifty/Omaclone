@@ -6,6 +6,7 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 plugin="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/omaclone.plugin"
+self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$here/restore")
 
 if [[ -x "$plugin/scripts/omaclone" ]]; then
   ROOT="$plugin"
@@ -19,27 +20,50 @@ else
   exit 1
 fi
 
+_kit_launcher_ok() {
+  local sums="$here/SHA256SUMS" want got
+  [[ -f "$sums" && -f "$self" ]] || return 1
+  want=$(awk '$2=="scripts/restore"{print $1; exit}' "$sums")
+  [[ -n "$want" ]] || return 1
+  got=$(sha256sum "$self" | awk '{print $1}')
+  [[ "$got" == "$want" ]]
+}
+
 _kit_hash_ok() {
   local sums="$here/SHA256SUMS"
   [[ -f "$sums" ]] || return 1
   python3 "$ROOT/scripts/bootstrap_copy.py" --verify "$sums" "$ROOT"
 }
 
-if [[ "$ROOT" != "$plugin" && "${OMACLONE_ALLOW_UNTRUSTED_KIT:-}" != 1 ]]; then
-  if ! _kit_hash_ok; then
-    echo "omaclone: kit scripts do not match SHA256SUMS (the USB/NAS copy may have been changed)." >&2
-    if [[ -t 0 ]]; then
-      printf 'Type UNTRUSTED to run this copy anyway: '
-      read -r phrase
-      [[ "$phrase" == UNTRUSTED ]] || exit 1
-    else
-      echo "Set OMACLONE_ALLOW_UNTRUSTED_KIT=1 to override, or install the plugin from git." >&2
-      exit 1
-    fi
+_kit_untrusted() {
+  echo "omaclone: kit scripts do not match SHA256SUMS (the USB/NAS copy may have been changed)." >&2
+  if [[ -t 0 ]]; then
+    printf 'Type UNTRUSTED to run this copy anyway: '
+    read -r phrase
+    [[ "$phrase" == UNTRUSTED ]] || exit 1
+  else
+    echo "Set OMACLONE_ALLOW_UNTRUSTED_KIT=1 to override, or install the plugin from git." >&2
+    exit 1
+  fi
+}
+
+if [[ "${OMACLONE_ALLOW_UNTRUSTED_KIT:-}" != 1 ]]; then
+  if ! _kit_launcher_ok; then
+    _kit_untrusted
+  fi
+  if [[ "$ROOT" != "$plugin" ]] && ! _kit_hash_ok; then
+    _kit_untrusted
   fi
 fi
 
 if [[ -f "$here/config.toml" ]]; then
+  if [[ "${OMACLONE_TEST:-}" != 1 && -t 0 && -t 1 ]]; then
+    echo "This USB/NAS copy includes a destination in $here/config.toml." >&2
+    echo "Only continue if you trust this copy's host or bucket." >&2
+    printf 'Type TRUST to use it: ' >&2
+    read -r phrase
+    [[ "$phrase" == TRUST ]] || { echo "aborted. Install the plugin from git and run: omaclone restore" >&2; exit 1; }
+  fi
   export NAS_BACKUP_CONFIG="$here/config.toml"
 elif [[ -f "$(dirname "$ROOT")/config.toml" ]]; then
   export NAS_BACKUP_CONFIG="$(dirname "$ROOT")/config.toml"

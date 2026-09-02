@@ -104,6 +104,12 @@ nas_backup_backend_all_names() {
 
 nas_backup_backend_ensure() {
   local kind="$1" name="$2"
+  local user_path shipped_path
+  user_path="${NAS_BACKUP_USER_BACKENDS:-$NAS_BACKUP_USER_CONFIG_DIR/backends}/$kind/$name"
+  shipped_path="$NAS_BACKUP_ROOT/backends/$kind/$name"
+  if [[ -x "$user_path" && -x "$shipped_path" ]]; then
+    log "using user backend $kind/$name (overrides shipped copy)"
+  fi
   if nas_backup_backend_available "$kind" "$name"; then
     return 0
   fi

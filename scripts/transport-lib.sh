@@ -11,6 +11,55 @@ cfg_set() {
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# Resolve . and .. without requiring the path to exist.
+omaclone_abspath() {
+  python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$1"
+}
+
+# Shared mountpoint check for NFS/CIFS/disk systemd units.
+omaclone_validate_mountpoint() {
+  local mp="${1:-}" resolved
+  mp="${mp#"${mp%%[![:space:]]*}"}"
+  mp="${mp%"${mp##*[![:space:]]}"}"
+  if [[ -z "$mp" ]]; then
+    printf '%s\n' "Mountpoint is required (example: /mnt/omaclone)." >&2
+    return 1
+  fi
+  mp="${mp%/}"
+  [[ -n "$mp" ]] || mp="/"
+  if [[ "$mp" != /* ]]; then
+    printf '%s\n' "Mountpoint must be an absolute path (example: /mnt/omaclone)." >&2
+    return 1
+  fi
+  if [[ "$mp" == //* || "$mp" == *' '* || "$mp" == *$'\n'* || "$mp" == *$'\t'* ]]; then
+    printf '%s\n' "Mountpoint must be a single absolute path without spaces." >&2
+    return 1
+  fi
+  if [[ "$mp" == *..* ]]; then
+    printf '%s\n' "Mountpoint must not contain .." >&2
+    return 1
+  fi
+  resolved=$(omaclone_abspath "$mp")
+  case "$resolved" in
+    /|/mnt|/home|/usr|/etc|/boot|/var|/root|/opt|/tmp|/dev|/proc|/sys|/run)
+      printf '%s\n' "Refusing to mount over $resolved — pick a dedicated directory (example: /mnt/omaclone)." >&2
+      return 1
+      ;;
+    /etc|/*/etc|/boot|/*/boot|/usr|/*/usr|/bin|/*/bin|/sbin|/*/sbin|/lib|/*/lib|/lib64|/*/lib64|/root|/*/root|/proc|/*/proc|/sys|/*/sys|/dev|/*/dev)
+      printf '%s\n' "Refusing to mount over $resolved." >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$resolved"
+}
+
+omaclone_disk_uuid_ok() {
+  local uuid="${1:-}"
+  [[ "$uuid" =~ ^[0-9a-fA-F-]{8,36}$ ]] || return 1
+  [[ "$uuid" != *..* && "$uuid" != */* ]] || return 1
+  return 0
+}
+
 sudo_noninteractive() {
   if [[ -t 0 && -t 1 ]]; then
     sudo "$@"

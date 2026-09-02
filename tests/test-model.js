@@ -120,12 +120,16 @@ assert.strictEqual(M.paneLocations([cloudBare]).length, 1, "s3 must stay in the 
 const cloudOff = { id: "cloud", backend: "s3", connected: false, source: "config" };
 assert.strictEqual(M.paneLocations([cloudOff]).length, 1, "s3 is not filtered like an unplugged disk");
 
-assert.strictEqual(M.shouldApplyStatus(false, "nas", { locationId: "s3-aws" }), true)
+assert.strictEqual(M.shouldApplyStatus(false, "nas", { locationId: "s3-aws" }), false, "stale id must not apply even when not switching")
 assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "s3-aws" }), true)
 assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "nas" }), false, "switching must ignore stale NAS status")
 assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "" }), false)
 assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", null), false)
 assert.strictEqual(M.shouldApplyStatus(true, "", { locationId: "s3-aws" }), false)
+
+const extra = M.parseStatus('{"ok":true,"locationId":"nas","evil":"<b>x</b>"}')
+assert.strictEqual(extra.evil, undefined, "parseStatus must drop unknown JSON keys")
+assert.strictEqual(extra.locationId, "nas")
 
 const broken = M.parseStatus("{not json");
 assert.strictEqual(broken.lastError, "Failed to parse backup status");

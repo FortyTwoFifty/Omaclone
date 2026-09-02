@@ -61,6 +61,7 @@ CursorSurface {
       anchors.verticalCenter: parent.verticalCenter
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: locRow.loc ? (locRow.loc.label || locRow.locId) : ""
         color: locRow.foreground
@@ -71,6 +72,7 @@ CursorSurface {
       }
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: locRow.loc && panel ? panel.locationDescription(locRow.loc) : ""
         color: Qt.darker(locRow.foreground, 1.5)
