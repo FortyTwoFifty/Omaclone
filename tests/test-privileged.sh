@@ -53,6 +53,25 @@ priv uninstall
 [[ -f "$disk_unit" ]] || fail "uninstall must not remove a unit whose hash no longer matches"
 rm -f "$disk_unit"
 
+# Publish must refuse a pre-existing foreign unit of the same name.
+foreign_mp=/mnt/omaclone-collide
+foreign_unit=$(systemd-escape -p --suffix=mount "$foreign_mp")
+cat >"$OMACLONE_UNIT_DIR/$foreign_unit" <<'EOF'
+[Unit]
+Description=foreign
+EOF
+set +e
+priv install-nfs --uri "10.10.0.10:/export" --mountpoint "$foreign_mp" >/tmp/omaclone-collide.err 2>&1
+rc=$?
+set -e
+(( rc != 0 )) || fail "install-nfs must refuse to replace a foreign unit"
+grep -q 'foreign' "$OMACLONE_UNIT_DIR/$foreign_unit" || fail "foreign unit was overwritten"
+grep -qi 'refusing to replace' /tmp/omaclone-collide.err || fail "collision should be refused: $(cat /tmp/omaclone-collide.err)"
+rm -f "$OMACLONE_UNIT_DIR/$foreign_unit"
+
+priv check-disk --path /dev/null --majmin 1:3 --bytes 1 --by-id "" >/dev/null 2>&1 \
+  && fail "check-disk must require by-id"
+
 tardir=$(mktemp -d)
 mkdir -p "$tardir/etc/fido2"
 echo ok >"$tardir/etc/fido2/ok"
@@ -97,5 +116,39 @@ mode=$(stat -c '%a' "$etc_root/fido2/ok")
 [[ "$mode" == 644 ]] || fail "restored file mode $mode, want 644"
 [[ ! -L "$etc_root/fido2/ok" ]] || fail "restored file is a symlink"
 rm -rf "$tardir" "$extract" "$etc_root"
+
+# Member cap: a small tar with too many members must be rejected, not fully materialized.
+bomb=$(mktemp)
+python3 - "$bomb" <<'PY'
+import tarfile, sys, io
+path = sys.argv[1]
+with tarfile.open(path, "w") as tf:
+    for i in range(200):
+        info = tarfile.TarInfo(f"etc/fido2/n{i}")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "x"
+        tf.addfile(info)
+PY
+set +e
+priv extract-etc --tar "$bomb" --dest "$(mktemp -d)" >/tmp/omaclone-bomb.err 2>&1
+rc=$?
+set -e
+(( rc != 0 )) || fail "oversized member count should be rejected"
+grep -qi 'too many members' /tmp/omaclone-bomb.err || fail "member cap: $(cat /tmp/omaclone-bomb.err)"
+rm -f "$bomb"
+
+# run-helper must cap incrementally and kill the producer.
+set +e
+python3 "$ROOT/scripts/run-helper.py" 64 2 1 -- python3 -c 'import sys,time
+while True:
+    sys.stdout.write("x"*32)
+    sys.stdout.flush()
+    time.sleep(0.01)
+' >/tmp/omaclone-cap.out 2>/tmp/omaclone-cap.err
+rc=$?
+set -e
+(( rc != 0 )) || fail "run-helper should fail on byte cap"
+got=$(wc -c </tmp/omaclone-cap.out)
+(( got <= 64 )) || fail "run-helper wrote $got bytes after 64-byte cap"
 
 echo OK

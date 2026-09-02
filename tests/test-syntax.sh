@@ -52,4 +52,17 @@ grep -q 'sha256sum -c' "$wf" || fail "CI must verify gum checksums"
 grep -q 'minio/minio:latest' "$wf" && fail "CI must not pull minio/minio:latest"
 grep -q 'actions/checkout@v4' "$wf" && fail "CI must not use a floating checkout tag"
 
+grep -q 'omaclone_privileged_clear_overrides' "$ROOT/scripts/lib.sh" \
+  || fail "privileged handoff must unset inherited payload overrides"
+if grep -q "exec(base64" "$ROOT/scripts/lib.sh" "$ROOT/scripts/transport-lib.sh"; then
+  fail "must not interpolate helper payload into python -c"
+fi
+grep -q 'pass_fds' "$ROOT/scripts/privileged.py" || fail "mkfs must preserve the held device fd"
+grep -q 'tf.next()' "$ROOT/scripts/privileged.py" || fail "etc tar must iterate members"
+if grep -q 'getmembers()' "$ROOT/scripts/privileged.py"; then
+  fail "etc tar must not materialize getmembers()"
+fi
+grep -q 'select.select' "$ROOT/scripts/run-helper.py" || fail "run-helper must cap pipes incrementally"
+grep -q 'killpg' "$ROOT/scripts/run-helper.py" || fail "run-helper must reap the process group"
+
 echo OK

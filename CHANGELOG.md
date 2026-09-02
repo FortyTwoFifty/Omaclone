@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.1
+
+- Privileged helper is installed to root-owned `/usr/lib/omaclone/privileged.py` (owner/mode/digest checked). Inherited `_OMACLONE_PRIVILEGED_B64` is ignored; sudo no longer interpolates payload into `python3 -c`.
+- Disk format requires `/dev/disk/by-id`, derives the sysfs ancestor/descendant/holder/slave graph itself, and refuses system/swap/mounted relations. `mkfs.ext4` inherits the held device fd via `pass_fds`.
+- Systemd unit publish refuses to replace a foreign unit. Rollback undoes only this transaction (unlink created files; restore replaced Omaclone artifacts).
+- Status/discovery helper streams and caps stdout/stderr incrementally and forwards termination to the whole process group.
+- `/etc` tar restore iterates members and rejects the archive when member, directory, or uncompressed-byte limits are exceeded.
+
 ## 1.6.0
 
 - Privileged NFS/disk unit install no longer `sudo cp`s files from a user temp dir. A slurped root helper generates units from validated URI/UUID/mountpoint data, publishes them with exclusive no-follow opens, checks ownership/mode, enables, and rolls back on failure.

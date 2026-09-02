@@ -665,11 +665,8 @@ PY
       log "lingering login was not disabled; to disable: loginctl disable-linger $USER"
     fi
     if declare -F omaclone_privileged >/dev/null; then
-      omaclone_privileged_load 2>/dev/null || true
-      if [[ -n "${_OMACLONE_PRIVILEGED_B64:-}" ]]; then
-        printf '%s\n' "sudo — removing NFS/disk system units if this install created them." >&2
-        omaclone_privileged uninstall || log "no matching system mount units removed"
-      fi
+      printf '%s\n' "sudo — removing NFS/disk system units if this install created them." >&2
+      omaclone_privileged uninstall || log "no matching system mount units removed"
     fi
   fi
   omaclone_unlink_cli

@@ -363,7 +363,6 @@ nfs_install_automount() {
   nfs_validate_uri "$uri" || return 2
   nfs_validate_mountpoint "$mountpoint" || return 2
   mountpoint="${mountpoint%/}"
-  omaclone_privileged_load || return 1
 
   if nfs_mountpoint_busy "$uri" "$mountpoint"; then
     printf '%s\n' "$mountpoint is already mounted from $(nfs_mountpoint_source_label "$mountpoint"). Pick a different mountpoint or unmount it first." >&2
@@ -377,6 +376,8 @@ nfs_install_automount() {
       nfs_check_available "$uri" || return 1
     fi
   fi
+
+  omaclone_privileged_load || return 1
 
   nfs_unit_names "$mountpoint"
   unit_name="$NFS_MOUNT_UNIT"

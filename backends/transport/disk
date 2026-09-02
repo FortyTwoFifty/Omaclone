@@ -89,8 +89,8 @@ _format_device() {
   by_id=$(_disk_json_get "$rec" by_id)
   serial=$(_disk_json_get "$rec" serial)
   pkname=$(_disk_json_get "$rec" pkname)
-  [[ -n "$path" && -n "$majmin" && -n "$bytes" ]] || {
-    printf '%s\n' "refusing to format without a stable device identity" >&2
+  [[ -n "$path" && -n "$majmin" && -n "$bytes" && -n "$by_id" ]] || {
+    printf '%s\n' "refusing to format without a stable by-id device identity" >&2
     return 1
   }
   if ! have_cmd gum; then

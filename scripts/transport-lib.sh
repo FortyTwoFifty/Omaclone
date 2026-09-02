@@ -102,30 +102,83 @@ if ! declare -F sudo_tty >/dev/null 2>&1; then
   }
 fi
 
-# Slurp privileged.py before any sudo delay so the pathname cannot be swapped.
-if ! declare -F omaclone_privileged_load >/dev/null 2>&1; then
-  omaclone_privileged_load() {
-    local helper
-    if [[ -n "${_OMACLONE_PRIVILEGED_B64:-}" ]]; then
-      return 0
-    fi
-    if [[ -n "${NAS_BACKUP_ROOT:-}" && -f "$NAS_BACKUP_ROOT/scripts/privileged.py" ]]; then
-      helper="$NAS_BACKUP_ROOT/scripts/privileged.py"
+# Fixed root-owned helper. Inherited payload overrides are ignored.
+if ! declare -F omaclone_privileged >/dev/null 2>&1; then
+  OMACLONE_PRIVILEGED_DEST="${OMACLONE_PRIVILEGED_DEST:-/usr/lib/omaclone/privileged.py}"
+  OMACLONE_PRIVILEGED_SHA256="8481bfdd177c1fe2b476b7249c4c636e66dcb390801c1d6cf4b5e0cdcf3a8ae0"
+
+  omaclone_privileged_clear_overrides() {
+    unset _OMACLONE_PRIVILEGED_B64 _OMACLONE_PRIVILEGED_SRC OMACLONE_PRIVILEGED_B64
+  }
+
+  sudo_keep_stdin() {
+    if [[ -e /dev/tty && -r /dev/tty && -w /dev/tty ]] && { [[ -t 0 || -t 1 || -t 2 ]]; }; then
+      sudo "$@"
+    elif [[ -t 0 && -t 1 ]]; then
+      sudo "$@"
     else
-      helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/privileged.py"
-    fi
-    [[ -f "$helper" ]] || { echo "omaclone: missing privileged helper" >&2; return 1; }
-    if base64 -w0 "$helper" >/dev/null 2>&1; then
-      _OMACLONE_PRIVILEGED_B64=$(base64 -w0 "$helper")
-    else
-      _OMACLONE_PRIVILEGED_B64=$(base64 "$helper" | tr -d '\n')
+      sudo -n "$@"
     fi
   }
 
-  omaclone_privileged() {
-    omaclone_privileged_load || return 1
-    sudo_tty python3 -c "import base64; exec(base64.standard_b64decode('${_OMACLONE_PRIVILEGED_B64}'), {'__name__':'__main__'})" -- "$@"
+  omaclone_privileged_src() {
+    if [[ -n "${NAS_BACKUP_ROOT:-}" && -f "$NAS_BACKUP_ROOT/scripts/privileged.py" ]]; then
+      printf '%s\n' "$NAS_BACKUP_ROOT/scripts/privileged.py"
+    else
+      printf '%s\n' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/privileged.py"
+    fi
   }
+
+  omaclone_privileged_ensure() {
+    omaclone_privileged_clear_overrides
+    local src dest want
+    dest="${OMACLONE_PRIVILEGED_DEST:-/usr/lib/omaclone/privileged.py}"
+    src=$(omaclone_privileged_src)
+    want="$OMACLONE_PRIVILEGED_SHA256"
+    [[ -f "$src" ]] || { echo "omaclone: missing privileged helper" >&2; return 1; }
+    if [[ "${OMACLONE_PRIVILEGED_TEST:-}" == 1 ]]; then
+      return 0
+    fi
+    if [[ -f "$dest" ]]; then
+      if sudo_tty /usr/bin/python3 "$dest" self-check --expect-sha256 "$want" >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+    printf '%s\n' "sudo — installing the Omaclone privileged helper to $dest" >&2
+    python3 "$src" emit-if-digest --expect-sha256 "$want" | sudo_keep_stdin /bin/sh -c '
+      set -euo pipefail
+      dest="$1"
+      want="$2"
+      dir=$(dirname "$dest")
+      mkdir -p -m 0755 "$dir"
+      chown root:root "$dir"
+      chmod 0755 "$dir"
+      tmp="$dest.omaclone-new"
+      rm -f "$tmp"
+      cat >"$tmp"
+      chown root:root "$tmp"
+      chmod 0555 "$tmp"
+      got=$(sha256sum -- "$tmp" | awk "{print \$1}")
+      if [ "$got" != "$want" ]; then
+        rm -f "$tmp"
+        echo "omaclone: helper digest mismatch after install" >&2
+        exit 1
+      fi
+      mv -f "$tmp" "$dest"
+    ' _ "$dest" "$want"
+  }
+
+  omaclone_privileged() {
+    omaclone_privileged_clear_overrides
+    omaclone_privileged_ensure || return 1
+    if [[ "${OMACLONE_PRIVILEGED_TEST:-}" == 1 ]]; then
+      python3 "$(omaclone_privileged_src)" "$@"
+      return
+    fi
+    sudo_tty /usr/bin/python3 "${OMACLONE_PRIVILEGED_DEST:-/usr/lib/omaclone/privileged.py}" "$@"
+  }
+
+  omaclone_privileged_load() { omaclone_privileged_ensure; }
 fi
 
 mount_wake() {
