@@ -459,5 +459,60 @@ assert got == []
 got = mod.iter_candidates(loop_data, set(), allow_loop=True)
 assert paths(got) == ["/dev/loop0"]
 
+# Sibling partition on the system disk is never a clone target.
+siblings = {
+    "blockdevices": [
+        {
+            "name": "nvme0n1",
+            "path": "/dev/nvme0n1",
+            "size": 1000000000000,
+            "type": "disk",
+            "fstype": None,
+            "uuid": None,
+            "mountpoint": None,
+            "tran": "nvme",
+            "hotplug": False,
+            "label": None,
+            "model": "System",
+            "pkname": None,
+            "parttype": None,
+            "children": [
+                {
+                    "name": "nvme0n1p2",
+                    "path": "/dev/nvme0n1p2",
+                    "size": 500000000000,
+                    "type": "part",
+                    "fstype": "btrfs",
+                    "uuid": "root-uuid",
+                    "mountpoint": "/",
+                    "tran": None,
+                    "hotplug": False,
+                    "label": None,
+                    "model": None,
+                    "pkname": "nvme0n1",
+                    "parttype": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+                },
+                {
+                    "name": "nvme0n1p3",
+                    "path": "/dev/nvme0n1p3",
+                    "size": 400000000000,
+                    "type": "part",
+                    "fstype": "ext4",
+                    "uuid": "data-uuid",
+                    "mountpoint": None,
+                    "tran": None,
+                    "hotplug": False,
+                    "label": "DATA",
+                    "model": None,
+                    "pkname": "nvme0n1",
+                    "parttype": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+                },
+            ],
+        }
+    ]
+}
+got = mod.iter_candidates(siblings, {"nvme0n1", "nvme0n1p2"}, allow_loop=False)
+assert "/dev/nvme0n1p3" not in paths(got), f"system-disk sibling offered: {got}"
+
 print("OK")
 PY

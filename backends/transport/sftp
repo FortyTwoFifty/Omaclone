@@ -42,13 +42,20 @@ _ssh_cmd() {
   fi
 }
 
+_sftp_path_ok() {
+  local s="${1:-}"
+  [[ -n "$s" ]] || return 1
+  [[ "$s" != -* ]] || return 1
+  [[ "$s" != *$'\n'* && "$s" != *$'\t'* ]] || return 1
+}
+
 _scp_cmd() {
   local port
   port=$(cfg transport.port 22)
   if [[ "$port" == 22 || -z "$port" ]]; then
-    scp -o BatchMode=yes -o StrictHostKeyChecking=yes -- "$@"
+    scp -o BatchMode=yes -o StrictHostKeyChecking=yes -r -- "$@"
   else
-    scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$port" -- "$@"
+    scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$port" -r -- "$@"
   fi
 }
 
@@ -80,6 +87,7 @@ setup() {
   port=$(gum_input "SSH port" "$port")
   remote=$(gum_input "Remote directory (parent of the restic repo)" "$remote")
   [[ -n "$host" ]] || { printf '%s\n' "host is required" >&2; exit 1; }
+  _sftp_path_ok "$remote" || { printf '%s\n' "remote directory is invalid." >&2; exit 1; }
   _sftp_ident_ok "$host" || { printf '%s\n' "SSH host must be a hostname or address, not an option." >&2; exit 1; }
   _sftp_ident_ok "$user" || { printf '%s\n' "SSH username is invalid." >&2; exit 1; }
   cfg_set transport.backend sftp
@@ -119,7 +127,8 @@ bootstrap-install() {
   dest_tmp=$(mktemp -d)
   python3 "$NAS_BACKUP_ROOT/scripts/bootstrap_copy.py" "$NAS_BACKUP_ROOT" "$dest_tmp" "$NAS_BACKUP_CONFIG"
   _ssh_cmd "mkdir -p $(printf '%q' "$remote")"
-  _scp_cmd -r "$dest_tmp/." "$(_ssh_target):$remote/"
+  _sftp_path_ok "$remote" || { printf '%s\n' "remote directory is invalid." >&2; exit 1; }
+  _scp_cmd "$dest_tmp/." "$(_ssh_target):$remote/"
   rm -rf "$dest_tmp"
 }
 

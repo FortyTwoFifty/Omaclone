@@ -51,8 +51,26 @@ omaclone_validate_mountpoint() {
       printf '%s\n' "Refusing to mount over $resolved." >&2
       return 1
       ;;
+    /var/tmp|/dev/shm)
+      printf '%s\n' "Refusing to mount over $resolved." >&2
+      return 1
+      ;;
   esac
+  if [[ -n "${HOME:-}" ]]; then
+    case "$resolved" in
+      "$HOME"|"$HOME"/*)
+        printf '%s\n' "Refusing to mount over \$HOME ($resolved)." >&2
+        return 1
+        ;;
+    esac
+  fi
   printf '%s\n' "$resolved"
+}
+
+mount_is_exact() {
+  local mp="${1:-}"
+  [[ -n "$mp" ]] || return 1
+  findmnt -n -M "$mp" >/dev/null 2>&1
 }
 
 omaclone_disk_uuid_ok() {
@@ -98,13 +116,13 @@ mount_wake() {
 mount_fstype_live() {
   local mp="${1:-}"
   [[ -n "$mp" ]] || return 1
-  findmnt -n -o FSTYPE "$mp" 2>/dev/null | awk '$1 != "" && $1 != "autofs" { print; exit }'
+  findmnt -n -M "$mp" -o FSTYPE 2>/dev/null | awk '$1 != "" && $1 != "autofs" { print; exit }'
 }
 
 mount_is_type() {
   local mp="${1:-}" types="${2:-}"
   [[ -n "$mp" && -n "$types" ]] || return 1
-  findmnt -n -t "$types" "$mp" >/dev/null 2>&1
+  findmnt -n -M "$mp" -t "$types" >/dev/null 2>&1
 }
 
 gum_input() {

@@ -94,9 +94,9 @@ _format_device() {
   phrase=$(gum input --placeholder "Type DESTROY to erase $path" </dev/tty)
   [[ "$phrase" == DESTROY ]] || { printf '%s\n' "aborted" >&2; return 1; }
   if [[ -n "$label" ]]; then
-    sudo mkfs.ext4 -F -L "$label" "$path"
+    sudo_tty mkfs.ext4 -F -L "$label" "$path"
   else
-    sudo mkfs.ext4 -F "$path"
+    sudo_tty mkfs.ext4 -F "$path"
   fi
 }
 
@@ -144,11 +144,15 @@ for line in sys.stdin:
     # USB / hotplug: mount with udisks while cloning. A fixed path is opt-in.
     if have_cmd gum && gum confirm --default=false "Use a fixed mountpoint (always-plugged extra disk)?"; then
       mountpoint=$(gum_input "Mountpoint for this disk" "${mountpoint:-/mnt/omaclone}")
+      mountpoint=$(omaclone_validate_mountpoint "$mountpoint") || exit 1
     else
       mountpoint=""
     fi
   else
     mountpoint=$(gum_input "Mountpoint for this disk (empty = desktop mount)" "$mountpoint")
+    if [[ -n "$mountpoint" ]]; then
+      mountpoint=$(omaclone_validate_mountpoint "$mountpoint") || exit 1
+    fi
   fi
 
   cfg_set transport.backend disk
@@ -228,11 +232,13 @@ _disk_udisks_mount() {
 }
 
 _disk_mount_at() {
-  local src="$1" dest="$2" fstype="$3" opts
+  local src="$1" dest="$2" fstype="$3" opts resolved
   [[ -n "$dest" ]] || return 1
+  resolved=$(omaclone_validate_mountpoint "$dest") || return 1
+  dest="$resolved"
   opts=$(_disk_mount_options "$fstype")
   sudo_tty mkdir -p "$dest" || return 1
-  sudo_tty mount -t "$fstype" -o "$opts" "$src" "$dest"
+  sudo_tty mount -t "$fstype" -o "$opts" -- "$src" "$dest"
 }
 
 _disk_attach() {

@@ -9,4 +9,7 @@ Type=oneshot
 TimeoutStartSec=2h
 NoNewPrivileges=yes
 PrivateTmp=yes
+ProtectSystem=strict
+RestrictSUIDSGID=yes
+LockPersonality=yes
 ExecStart=%h/.local/bin/omaclone prune --cron

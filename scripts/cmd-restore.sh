@@ -109,7 +109,7 @@ _restore_staging_dir() {
 }
 
 _restore_rsync_excludes() {
-  local line plugin_dir plugin_rel
+  local line plugin_dir plugin_rel state_rel
   if [[ -f "$ROOT/config/excludes.txt" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       line="${line%%#*}"
@@ -124,18 +124,33 @@ _restore_rsync_excludes() {
   plugin_rel="${plugin_dir#"$HOME"/}"
   if [[ -n "$plugin_dir" && "$plugin_rel" != "$plugin_dir" ]]; then
     printf '%s\n' "$plugin_rel"
+  else
+    printf '%s\n' ".config/omarchy/plugins/omaclone.plugin"
   fi
-  printf '%s\n' ".config/omarchy/plugins"
+  state_rel="${NAS_BACKUP_STATE_DIR#"$HOME"/}"
+  if [[ -n "$NAS_BACKUP_STATE_DIR" && "$state_rel" != "$NAS_BACKUP_STATE_DIR" ]]; then
+    printf '%s\n' "$state_rel/restore-staging"
+    printf '%s\n' "$state_rel/omaclone.lock"
+    printf '%s\n' "$state_rel/destination.lock"
+  fi
   return 0
 }
 
 _restore_extract_etc_tar() {
   local tarfile="$1" dest="$2"
   python3 - "$tarfile" "$dest" <<'PY'
-import os, sys, tarfile
+import sys, tarfile
 from pathlib import Path
 src, dest = Path(sys.argv[1]), Path(sys.argv[2])
 dest.mkdir(parents=True, exist_ok=True)
+kwargs = {"set_attrs": False}
+if sys.version_info >= (3, 12):
+    kwargs["filter"] = "data"
+errs = (tarfile.ExtractError,)
+for name in ("LinkOutsideDestinationError", "AbsoluteLinkError", "FilterError", "OutsideDestinationError"):
+    err = getattr(tarfile, name, None)
+    if err is not None:
+        errs += (err,)
 with tarfile.open(src, "r:*") as tf:
     for m in tf.getmembers():
         name = m.name.replace("\\", "/")
@@ -143,7 +158,15 @@ with tarfile.open(src, "r:*") as tf:
             continue
         if not (name == "etc" or name.startswith("etc/")):
             continue
-        tf.extract(m, dest, set_attrs=False)
+        link = (getattr(m, "linkname", None) or "").replace("\\", "/")
+        if link.startswith("/") or link.startswith("../") or "/../" in link:
+            continue
+        try:
+            tf.extract(m, dest, **kwargs)
+        except errs:
+            continue
+        except OSError:
+            continue
 PY
 }
 
@@ -242,6 +265,7 @@ cmd_restore() {
     fi
   }
   _restore_check_space "$NAS_BACKUP_STATE_DIR"
+  _restore_check_space "$HOME"
 
   log "restoring snapshot $id to $staging…"
   set +e
@@ -269,14 +293,14 @@ cmd_restore() {
   done < <(_restore_rsync_excludes)
   local rsync_args=(-aH --info=progress2 --safe-links)
   if (( replace )); then
-    rsync_args+=(--delete)
+    rsync_args+=(--delete --delete-after)
   fi
   rsync "${rsync_args[@]}" \
     "${rsync_excludes[@]}" \
     "$src"/ "$HOME"/
 
   local etc_tar
-  if etc_tar=$(staging_file etc.tar); then
+  if etc_tar=$(staging_file etc.tar "$src"); then
     local etc_dir="$staging/etc-extract"
     mkdir -p "$etc_dir"
     _restore_extract_etc_tar "$etc_tar" "$etc_dir"
@@ -338,6 +362,10 @@ cmd_restore() {
         log "skip invalid package name"
         continue
       fi
+      if match_hardware_pkg "$pkg" && (( ! same_machine )); then
+        log "skip hardware package: $pkg"
+        continue
+      fi
       pkgs+=("$pkg")
     done <"$list"
     ((${#pkgs[@]})) || return 0
@@ -350,7 +378,7 @@ cmd_restore() {
   }
 
   local idlist
-  if idlist=$(staging_file pkglist-identity.txt) && [[ -s "$idlist" ]]; then
+  if idlist=$(staging_file pkglist-identity.txt "$src") && [[ -s "$idlist" ]]; then
     tui_note "Identity packages from the clone:"
     cat "$idlist" >&2 || true
     if tui_confirm "Install these packages with pacman now?"; then
@@ -361,7 +389,7 @@ cmd_restore() {
     fi
   fi
   local aur
-  if aur=$(staging_file pkglist-aur.txt) && [[ -s "$aur" ]] && have yay; then
+  if aur=$(staging_file pkglist-aur.txt "$src") && [[ -s "$aur" ]] && have yay; then
     if tui_confirm "Install AUR identity packages with yay now?"; then
       log "installing AUR identity packages…"
       local pkg
@@ -382,7 +410,7 @@ cmd_restore() {
     fi
   fi
   local hwlist
-  if hwlist=$(staging_file pkglist-hardware.txt) && [[ -s "$hwlist" ]]; then
+  if hwlist=$(staging_file pkglist-hardware.txt "$src") && [[ -s "$hwlist" ]]; then
     if (( same_machine )); then
       tui_note "Hardware packages from the previous boot drive:"
       cat "$hwlist" >&2 || true
@@ -397,10 +425,20 @@ cmd_restore() {
     fi
   fi
 
-  loginctl enable-linger "$USER" 2>/dev/null || true
+  if is_tty && have gum && tui_confirm --default=false "Allow Omaclone timers to run after logout (linger)?"; then
+    loginctl enable-linger "$USER" 2>/dev/null || true
+    config_set install.linger 1
+  fi
   systemctl --user daemon-reload 2>/dev/null || true
-  local units_file unit
-  if units_file=$(staging_file user-units-enabled.txt); then
+  local units_file="" unit snap_units
+  if snap_units=$(staging_file user-units-enabled.txt "$src") && [[ -s "$snap_units" ]]; then
+    if is_tty && have gum && tui_confirm --default=false "Enable user systemd units from the clone?"; then
+      units_file="$snap_units"
+    else
+      log "skipped enabling user units"
+    fi
+  fi
+  if [[ -n "$units_file" && -f "$units_file" ]]; then
     while IFS= read -r unit || [[ -n "$unit" ]]; do
       unit="${unit##*/}"
       unit="${unit%% *}"

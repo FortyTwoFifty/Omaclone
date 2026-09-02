@@ -78,8 +78,8 @@ setup() {
     if have_cmd gum && gum confirm "Install systemd automount for $mountpoint (needs sudo)?"; then
       OMACLONE_NFS_ALREADY_PROBED=1 "$NAS_BACKUP_ROOT/scripts/install-nfs-mount.sh" "$uri" "$mountpoint"
     else
-      sudo mkdir -p "$mountpoint"
-      sudo mount -t "$(_nfs_type)" -o rw,hard,nconnect=8,noatime,nosuid,nodev,noexec,proto=tcp,_netdev "$uri" "$mountpoint"
+      sudo_tty mkdir -p "$mountpoint"
+      sudo_tty mount -t "$(_nfs_type)" -o rw,hard,nconnect=8,noatime,nosuid,nodev,noexec,proto=tcp,_netdev -- "$uri" "$mountpoint"
     fi
   fi
 
@@ -125,14 +125,22 @@ mount() {
   local fstype opts
   fstype=$(_nfs_type)
   opts=$(nfs_mount_options)
-  if ! sudo_noninteractive mount -t "$fstype" -o "$opts" "$uri" "$mountpoint"; then
-    sudo_noninteractive mount -t "$fstype" -o "$(nfs_mount_options_fallback)" "$uri" "$mountpoint" || exit 1
+  if mount_is_type "$mountpoint" autofs; then
+    mount_wake "$mountpoint"
+    if nfs_share_is_live "$mountpoint"; then
+      exit 0
+    fi
+  fi
+  if ! sudo_noninteractive mount -t "$fstype" -o "$opts" -- "$uri" "$mountpoint"; then
+    sudo_noninteractive mount -t "$fstype" -o "$(nfs_mount_options_fallback)" -- "$uri" "$mountpoint" || exit 1
   fi
 }
 
 unmount() {
   local mountpoint
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+  nfs_validate_mountpoint "$mountpoint" || return 0
+  mount_is_type "$mountpoint" "nfs,nfs4" || return 0
   sudo_noninteractive umount "$mountpoint" 2>/dev/null || true
 }
 

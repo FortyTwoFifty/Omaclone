@@ -28,6 +28,7 @@ _maybe_generate_restic_password() {
 }
 
 _setup_pick_destination() {
+  location_destination_edit_begin
   local where transport
   where=$(printf '%s\n' \
     "NAS (TrueNAS, Synology, Unraid)" \
@@ -70,7 +71,6 @@ _setup_pick_destination() {
       transport=local
       ;;
   esac
-  location_destination_edit_begin
   location_reset_live_transport "$transport"
   nas_backup_backend_run transport "$transport" setup
 }
@@ -221,8 +221,18 @@ _setup_register_location() {
 
 _setup_accept_defer() {
   local rc="${1:-1}"
-  (( rc == 0 || rc == 2 )) && return 0
+  (( rc == 0 )) && return 0
   return "$rc"
+}
+
+# 0 = repo ready. 1 = caller should return (defer already unlocked, or init failed).
+_setup_init_step() {
+  if _setup_init_repo; then
+    return 0
+  else
+    location_destination_edit_end
+    return 1
+  fi
 }
 
 _setup_install_or_schedule() {
@@ -349,8 +359,7 @@ _setup_continue() {
     config_set retention.preset "$keep"
     tui_note "Keeping: $(retention_label "$keep")"
   fi
-  _setup_init_repo
-  _setup_accept_defer $? || return
+  _setup_init_step || return
   if [[ -z "$(config_get locations.ids)" ]]; then
     _setup_register_location
   fi
@@ -379,6 +388,7 @@ cmd_setup() {
   require_core_deps
   require_gum
   migrate_locations
+  location_destination_edit_begin
 
   local sub="${1:-}"
   case "$sub" in
@@ -435,8 +445,7 @@ cmd_setup() {
         ;;
       Replace*)
         _setup_pick_destination
-        _setup_init_repo
-        _setup_accept_defer $? || return
+        _setup_init_step || return
         if [[ -z "$(location_active_id)" ]]; then
           _setup_register_location
         else
@@ -480,8 +489,7 @@ cmd_setup() {
       Switch*) cmd_location switch; return ;;
       Replace*)
         _setup_pick_destination
-        _setup_init_repo
-        _setup_accept_defer $? || return
+        _setup_init_step || return
         if [[ -z "$(location_active_id)" ]]; then
           _setup_register_location
         else

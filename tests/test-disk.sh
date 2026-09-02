@@ -92,6 +92,8 @@ grep -q 'gum confirm --default=false' "$ROOT/backends/transport/disk" \
   || fail "USB/hotplug setup should default to no fixed mountpoint"
 grep -q 'sudo_tty' "$ROOT/backends/transport/disk" \
   || fail "preferred-path mounts should use sudo_tty so gum does not steal the sudo prompt"
+grep -q 'omaclone_validate_mountpoint' "$ROOT/backends/transport/disk" \
+  || fail "disk mount/setup must validate the mountpoint before sudo"
 grep 'transport "$backend" mount 2>/dev/null' "$ROOT/scripts/cmd-setup.sh" \
   && fail "setup must not hide transport mount errors"
 echo "PASS: removable disks default to cold/udisks; mount errors are visible"

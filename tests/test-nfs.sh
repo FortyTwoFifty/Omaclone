@@ -149,4 +149,7 @@ if [[ -s "$sudo_log" ]]; then
   fail "install-nfs-mount.sh called sudo for an unresolvable host: $(cat "$sudo_log")"
 fi
 
+grep -q 'fg,_netdev,nosuid,nodev,noexec' "$ROOT/scripts/nfs-lib.sh" \
+  || fail "nfs probe mount must include nosuid,nodev,noexec"
+
 echo "OK"

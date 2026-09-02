@@ -46,7 +46,7 @@ omaclone uninstall
 omarchy plugin remove omaclone.plugin
 ```
 
-Run `uninstall` first while the plugin tree is still present. It removes the PATH command, daily/prune timers, and Super+Space menu keys we added. `omarchy plugin remove omaclone.plugin` unloads the bar widget. If you never ran setup, only the second command is needed.
+Run `uninstall` first while the plugin tree is still present. It removes the PATH command, daily/prune timers, and Super+Space menu keys we added. `omarchy plugin remove omaclone.plugin` unloads the bar widget. If you never ran setup, only the second command is needed. If you already removed the plugin tree, leftover Super+Space keys are the `omaclone*` entries in `~/.config/omarchy/extensions/omarchy-menu.jsonc`.
 
 Neither command deletes `~/.config/omaclone`, `~/.local/share/omaclone`, or clones stored on NAS, disk, or cloud. Leftovers you may still want to clear:
 
@@ -172,7 +172,7 @@ omarchy plugin add https://github.com/FortyTwoFifty/Omaclone.git --enable
 
 S3 has no `./restore` file. Re-enter access keys on the new machine; they are not on the recovery card.
 
-The TUI asks for the restic password, lets you pick a snapshot (host + time), and **overlays** `$HOME`. Type `RESTORE` to continue. Extra files already on this home stay unless you pass `--delete` and type `REPLACE`. ssh, gpg, browsers, and desktop keyring files come back with home.
+The TUI asks for the restic password, lets you pick a snapshot (host + time), and **overlays** `$HOME`. Type `RESTORE` to continue. Extra files already on this home stay unless you pass `--delete` and type `REPLACE`. ssh, gpg, browsers, desktop keyring files, and other Omarchy plugins come back with home (the Omaclone plugin tree itself is left alone). Enabling cloned user systemd units, and lingering login for timers, are separate confirmations.
 
 It will **not** copy `fstab`, LUKS headers, Limine `PARTUUID`, hostname, or GPU/CPU packages. `--same-machine` means you replaced the boot drive in this PC: it can offer hardware packages from the clone, and still refuses bootloader and LUKS files.
 
@@ -199,7 +199,7 @@ A longer walkthrough is in [RESTORE.md](RESTORE.md).
 
 Vendor names are wizard hints, not separate backends. Synology does not need a DSM API: SMB or SFTP is enough.
 
-**SMB:** UNC `//server/share`. The share password goes in the Omaclone keyring, never `config.toml` or `mount.cifs` argv. Omaclone does **not** install a CIFS automount — daily clones run only while the share is mounted. Use NFS if you want an always-on NAS.
+**SMB:** UNC `//server/share`. The share password goes in the Omaclone keyring, never `config.toml` or `mount.cifs` argv. Omaclone does **not** install a CIFS automount — daily clones run only while the share is already mounted (cron uses `sudo -n` and will skip if the share is down). Use NFS if you want an always-on NAS.
 
 **SFTP:** restic uses SSH with `BatchMode=yes` (keys only). Run `ssh-copy-id user@host` before setup; the daily timer cannot type a password.
 
@@ -258,13 +258,13 @@ Plugin id `omaclone.plugin`. Left-click the copied Omarchy mark on the bar.
 - **Tiles:** clone count (dash when nothing is connected, or for S3 until a clone has run on this machine), storage (label + size), keep plan. USB/NAS count files on the volume. S3 uses the count saved after clone/prune — the bar does not list the bucket on refresh (no extra LIST/GET charges).
 - **Keep:** click to change retention; a **tighter** plan prunes clones that fall outside it. Widening does not prune.
 - **Storage:** the tile shows the active clone location; click it (or press `l`) to switch. Extra disks are not always labeled USB.
-- **Actions:** setup (until configured), clone now, keep, clones, add location, restore
+- **Actions:** setup (until configured), clone now, keep, clones, verify, add location, forget clones, forget location, restore
 
-Right-click the chip (or press `r` in the pane) to refresh. Opening the pane also refreshes and searches mounted USB/NAS volumes for an Omaclone backup. Status is live health: whether each clone location is connected (disk plugged in, NAS mounted), not a stale last-result. Plug the drive back in and the not-connected / skipped-disk banner clears on the next refresh. While a disk or share is offline the chip polls every 10s and watches every installed UUID plus `last-result.json`. The chip uses the urgent color on error, a dimmer tone on warning, otherwise the bar foreground.
+Right-click the chip (or press `r` in the pane) to refresh. Opening the pane also refreshes and searches mounted USB/NAS volumes for an Omaclone backup. Status is live health: whether each clone location is connected (disk plugged in, NAS mounted), not a stale last-result. Plug the drive back in and the not-connected / skipped-disk banner clears on the next refresh. While a disk or share is offline the chip polls every 10s and watches every installed UUID plus `last-result.json`. The chip uses the urgent color on error, accent on a locked password manager, a dimmer tone on other warnings, otherwise the bar foreground. Keyboard: `r` refresh, `b` clone, `k` keep plan, `l` locations, `d` dismiss.
 
 Daily clone is `omaclone.timer` (02:00, with jitter). Weekly prune is `omaclone-prune.timer`. The timer clones `$HOME` without a password prompt; `/etc` and package lists are included only when `sudo` can run non-interactively (Omarchy’s optional passwordless sudo).
 
-Unattended clone needs a restic password with no terminal. **GNOME Keyring** can do that once Omaclone’s collection is unlocked: if the 02:00 timer fires while it is still locked, the chip turns the warning color and Omaclone waits, then clones automatically on the next unlock. **1Password** (`op`) and **Proton Pass** (`pass-cli`) must already be signed in; they cannot unlock themselves from a timer. If you keep using those instead of storing the restic password in the keyring, a locked or signed-out manager skips the automatic clone, the chip turns the warning color, and the pane says the last clone did not run. Clone from the pane after signing in, or accept the keyring offer so the timer can run on its own. The prompt-each-time backend never runs from the timer.
+Unattended clone needs a restic password with no terminal. **GNOME Keyring** can do that once Omaclone’s collection is unlocked: if the 02:00 timer fires while it is still locked, the chip turns the warning color and Omaclone waits up to 21 hours, then clones automatically when you unlock the collection. **1Password** (`op`) and **Proton Pass** (`pass-cli`) must already be signed in; they cannot unlock themselves from a timer. If you keep using those instead of storing the restic password in the keyring, a locked or signed-out manager skips the automatic clone, the chip turns the warning color, and the pane says the last clone did not run. Clone from the pane after signing in, or accept the keyring offer so the timer can run on its own. The prompt-each-time backend never runs from the timer.
 
 ---
 
@@ -317,10 +317,10 @@ Change this in setup, the bar pane, the Omarchy menu (**Omaclone → Keep plan�
 
 **Cloned**
 
-- `$HOME` (configs, dotfiles, **ssh/gpg/browser profiles**, desktop keyring files, identity state, and game saves that live outside Steam)
+- `$HOME` (configs, dotfiles, **ssh/gpg/browser profiles**, desktop keyring files, other Omarchy plugins, identity state, and game saves that live outside Steam)
 - Allowlisted `/etc` paths only (currently FIDO2). Not `fstab`, `crypttab`, hostname, mkinitcpio, Limine, LUKS, shadow, NetworkManager, systemd, pam, polkit, or ssh — those are refused even if the allowlist file is edited
 - Pacman identity packages (not GPU/firmware)
-- Enabled user units, minus machine-local mounts (see `config/user-units.deny`)
+- Enabled user units, minus machine-local mounts (see `config/user-units.deny`) — restore asks before enabling them
 
 **Not cloned**
 

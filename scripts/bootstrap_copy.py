@@ -23,6 +23,33 @@ KIT_SECTIONS = (
 )
 KIT_SECRETS_KEYS = frozenset({"backend", "vault", "item", "field"})
 KIT_RESTIC_KEYS = frozenset({"repo", "initialized"})
+KIT_TRANSPORT_KEYS = frozenset(
+    {
+        "backend",
+        "uri",
+        "endpoint",
+        "bucket",
+        "prefix",
+        "region",
+        "tls",
+        "preset",
+        "lookup",
+        "host",
+        "port",
+        "username",
+        "remote_path",
+        "uuid",
+        "device",
+        "fstype",
+        "mode",
+        "mountpoint",
+        "role_arn",
+    }
+)
+KIT_DESTINATION_KEYS = frozenset({"profile", "vendor"})
+KIT_NOTIFY_KEYS = frozenset({"backend"})
+KIT_RESTORE_KEYS = frozenset({"profile"})
+KIT_RETENTION_KEYS = frozenset({"preset"})
 SECTION_RE = re.compile(r"^\[([^\]]+)\]\s*$")
 KV_RE = re.compile(r"^([A-Za-z0-9_.-]+)\s*=\s*(.*)$")
 
@@ -135,10 +162,22 @@ def _keep_key(section: str, key: str) -> bool:
         return key in KIT_SECRETS_KEYS
     if section == "restic":
         return key in KIT_RESTIC_KEYS
-    if section == "locations" or section.startswith("locations."):
-        return True
+    if section == "transport":
+        return key in KIT_TRANSPORT_KEYS
+    if section == "destination":
+        return key in KIT_DESTINATION_KEYS
+    if section == "notify":
+        return key in KIT_NOTIFY_KEYS
+    if section == "restore":
+        return key in KIT_RESTORE_KEYS
+    if section == "retention":
+        return key in KIT_RETENTION_KEYS
+    if section == "locations":
+        return key in {"ids", "active", "migrated"}
+    if section.startswith("locations."):
+        return key in KIT_TRANSPORT_KEYS | {"label", "backend", "schedule", "profile", "vendor", "repo"}
     if section in KIT_SECTIONS:
-        return True
+        return False
     return False
 
 

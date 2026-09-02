@@ -256,12 +256,25 @@ cmd_copy() {
   [[ "$dest_id" != "$src_id" ]] || die "already on location '$dest_id'"
   location_destination_edit_begin
   location_prepare_mount "$dest_id" || die "location '$dest_id' is not connected"
-  local dest_backend dest_repo src_repo
+  local dest_backend dest_repo src_repo dest_mp dest_uuid dest_live
   dest_backend=$(location_get "$dest_id" backend)
   dest_repo=$(location_get "$dest_id" repo)
+  dest_mp=$(location_get "$dest_id" mountpoint)
+  dest_uuid=$(location_get "$dest_id" uuid)
   case "$dest_backend" in
     s3|sftp) die "copy currently supports mounted destinations (NAS share, disk, local path)" ;;
   esac
+  if [[ -n "$dest_uuid" ]]; then
+    dest_live=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$dest_uuid" 2>/dev/null | head -n 1 || true)
+    if [[ -n "$dest_live" ]]; then
+      dest_repo=$(map_restic_repo_onto_mount "${dest_repo:-}" "$dest_mp" "$dest_live") || true
+    fi
+  elif [[ -n "$dest_mp" ]]; then
+    dest_live=$(findmnt -n -M "$dest_mp" -o TARGET 2>/dev/null | head -n 1 || true)
+    if [[ -n "$dest_live" && -n "$dest_repo" ]]; then
+      dest_repo=$(map_restic_repo_onto_mount "$dest_repo" "$dest_mp" "$dest_live") || true
+    fi
+  fi
   [[ -n "$dest_repo" ]] || die "location '$dest_id' has no restic.repo"
   need_cmd restic
   omaclone_acquire_lock
@@ -270,14 +283,34 @@ cmd_copy() {
   transport_prepare_env
   src_repo=$(restic_repo)
   [[ -n "$src_repo" ]] || die "active restic.repo is not set"
+  if [[ "$dest_repo" == "$src_repo" ]]; then
+    password_cleanup
+    finish_transport
+    location_destination_edit_end
+    die "source and destination resolve to the same restic repo"
+  fi
+  if [[ "$dest_repo" == /* ]]; then
+    local dest_fs
+    dest_fs=$(findmnt -n -T "$dest_repo" -o TARGET 2>/dev/null | head -n 1 || true)
+    if [[ -n "$dest_mp" && -n "$dest_fs" && "$dest_fs" == / ]]; then
+      case "$dest_mp" in
+        /mnt/*|/media/*|/run/media/*)
+          password_cleanup
+          finish_transport
+          location_destination_edit_end
+          die "destination '$dest_id' is not mounted; not initializing a repo on /"
+          ;;
+      esac
+    fi
+  fi
   if [[ ! -f "$dest_repo/config" ]]; then
     log "initializing restic repo at $dest_repo"
     mkdir -p "$dest_repo"
-    restic --password-file "$NAS_BACKUP_PWFILE" --repo "$dest_repo" init
+    restic_env_exec --repo "$dest_repo" init
   fi
   log "copying clones $src_repo → $dest_repo"
-  restic --password-file "$NAS_BACKUP_PWFILE" --repo "$dest_repo" \
-    copy --from-repo "$src_repo" --from-password-file "$NAS_BACKUP_PWFILE" \
+  restic_env_exec --repo "$dest_repo" \
+    copy --from-repo "$src_repo" --from-password-file "/dev/fd/${NAS_BACKUP_PWFD}" \
     --tag identity
   password_cleanup
   finish_transport

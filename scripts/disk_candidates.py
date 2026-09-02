@@ -116,9 +116,17 @@ def is_esp(row: dict) -> bool:
     return False
 
 
+def _truthy(val: object) -> bool:
+    if val is True:
+        return True
+    if val is False or val is None:
+        return False
+    return str(val).strip().lower() in {"1", "true", "yes"}
+
+
 def is_removable(row: dict) -> bool:
     tran = str(row.get("tran") or "").lower()
-    return tran == "usb" or bool(row.get("hotplug"))
+    return tran == "usb" or _truthy(row.get("hotplug"))
 
 
 def to_rec(row: dict) -> dict:
@@ -134,7 +142,7 @@ def to_rec(row: dict) -> dict:
         "uuid": row.get("uuid") or "",
         "mountpoint": row.get("mountpoint") or "",
         "tran": row.get("tran") or "",
-        "hotplug": bool(row.get("hotplug")),
+        "hotplug": _truthy(row.get("hotplug")),
         "label": row.get("label") or "",
         "model": row.get("model") or "",
     }
@@ -165,6 +173,9 @@ def iter_candidates(
         if name.startswith("zram") or name.startswith("sr"):
             continue
         if name in system_names:
+            continue
+        pkname = str(row.get("pkname") or "")
+        if pkname and pkname in system_names:
             continue
         mp = row.get("mountpoint") or ""
         if mp in skip_mounts:

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.1
+
+- `config.py` no longer `chmod 700`s `/tmp` (or other system dirs) when the config file lives there.
+- Restore `--delete` uses `--delete-after` and excludes live `restore-staging`. `/etc` extras, pkglists, and user units are read from the restic extract, not leftover local staging. Other Omarchy plugins restore; only `omaclone.plugin` is excluded. User units and linger ask before enabling. `etc.tar` uses tarfile `filter="data"`.
+- `omaclone copy` remaps the dest onto the live mount, refuses to init a repo on `/`, and runs through the same AWS-env helper as clone. SFTP kit copy passes `scp -r --`.
+- Local/NFS/CIFS `ready` uses exact `findmnt -M`. Disk setup validates mountpoints before sudo. System-disk sibling partitions are not offered for format. NFS probe mounts are `nosuid,nodev,noexec`. Saved locations are never auto-dropped from status.
+- Setup “continue later” on restic init does not register the location or install timers. Interactive CIFS/NFS/disk/keyring sudo uses `/dev/tty`. Keyring-retry timeout is 21h. Uninstall stops oneshot services and clears linger when Omaclone enabled it.
+- Bar: `watchPaths` no longer rebuilds FileViews every poll; empty helper stdout backs off; a failed location switch reverts the radio; KEEP is disabled until setup is complete.
+
 ## 1.5.0
 
 - Kit `SHA256SUMS` covers `scripts/`, `backends/`, and `config/`. The outer USB/NAS `./restore` is hashed against `scripts/restore`. `omaclone install` will not put a kit copy on PATH or symlink the bar plugin to the stick.

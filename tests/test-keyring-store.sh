@@ -172,6 +172,7 @@ grep -q newline /tmp/omaclone-keyring-test.err || fail "multiline put should men
 
 # File store (test-only, no libsecret).
 FILEKR=$(mktemp -d)
+export OMACLONE_TEST=1
 export OMACLONE_KEYRING_FILE="$FILEKR"
 python3 "$STORE" available || fail "file store available should succeed"
 python3 "$STORE" ensure || fail "file store ensure should succeed"

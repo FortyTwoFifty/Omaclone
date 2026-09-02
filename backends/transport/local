@@ -23,7 +23,7 @@ setup() {
       fi
       ;;
   esac
-  if ! findmnt -n "$mountpoint" >/dev/null 2>&1; then
+  if ! findmnt -n -M "$mountpoint" >/dev/null 2>&1; then
     case "$mountpoint" in
       /mnt/*|/media/*|/run/media/*)
         printf '%s\n' "$mountpoint is not mounted. Mount the share or disk first." >&2
@@ -49,7 +49,7 @@ ready() {
   [[ -n "$repo" ]] || return 1
   parent=$(dirname "$repo")
   [[ -d "$parent" ]] || return 1
-  if [[ -n "$mp" ]] && findmnt -n "$mp" >/dev/null 2>&1; then
+  if [[ -n "$mp" ]] && findmnt -n -M "$mp" >/dev/null 2>&1; then
     mount_wake "$mp"
     [[ -n "$(mount_fstype_live "$mp")" ]]
     return

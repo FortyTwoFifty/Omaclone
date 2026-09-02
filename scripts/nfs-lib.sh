@@ -165,7 +165,7 @@ nfs_validate_uri() {
     printf '%s\n' "NFS URI must be host:/export (example: 10.10.0.10:/mnt/pool/backups)." >&2
     return 1
   fi
-  if [[ "$NFS_HOST" == */* || "$NFS_HOST" == *' '* ]]; then
+  if [[ "$NFS_HOST" == */* || "$NFS_HOST" == *' '* || "$NFS_HOST" == -* ]]; then
     printf '%s\n' "NFS host is invalid in '$uri'." >&2
     return 1
   fi
@@ -305,7 +305,7 @@ Check:
 EOF
   if command -v showmount >/dev/null 2>&1 && [[ -n "${NFS_HOST:-}" ]]; then
     local exports
-    exports=$(timeout 5 showmount -e "$NFS_HOST" 2>/dev/null || true)
+    exports=$(timeout 5 showmount -e -- "$NFS_HOST" 2>/dev/null || true)
     if [[ -n "$exports" ]]; then
       printf '\nExports advertised by %s:\n%s\n' "$NFS_HOST" "$exports" >&2
     fi
@@ -323,15 +323,15 @@ nfs_probe_mount() {
   if command -v timeout >/dev/null 2>&1; then
     # timeout(1) cannot run a bash function; bind sudo to /dev/tty like sudo_tty.
     if [[ -e /dev/tty && -r /dev/tty && -w /dev/tty ]] && { [[ -t 0 || -t 1 || -t 2 ]]; }; then
-      timeout 15 sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp" <>/dev/tty 2>/dev/tty
+      timeout 15 sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev,nosuid,nodev,noexec" -- "$uri" "$tmp" <>/dev/tty 2>/dev/tty
     elif [[ -t 0 && -t 1 ]]; then
-      timeout 15 sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp"
+      timeout 15 sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev,nosuid,nodev,noexec" -- "$uri" "$tmp"
     else
-      timeout 15 sudo -n mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp"
+      timeout 15 sudo -n mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev,nosuid,nodev,noexec" -- "$uri" "$tmp"
     fi
     rc=$?
   else
-    _nfs_sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev" "$uri" "$tmp"
+    _nfs_sudo mount -t "$fstype" -o "ro,soft,timeo=30,retrans=2,retry=0,fg,_netdev,nosuid,nodev,noexec" -- "$uri" "$tmp"
     rc=$?
   fi
   if (( rc == 0 )); then

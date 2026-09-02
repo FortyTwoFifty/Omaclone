@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "omaclone.plugin",
   "name": "Omaclone",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "author": "Brandon Proulx",
   "license": "MIT",
   "description": "Clone an Omarchy identity to NAS, extra disk, or S3-compatible cloud, then restore it after a reinstall.",

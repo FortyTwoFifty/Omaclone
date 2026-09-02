@@ -105,6 +105,13 @@ rm -rf "$staging"
 got=$(_restore_rsync_excludes)
 printf '%s\n' "$got" | grep -Fx '.local/share/Steam' >/dev/null || fail "excludes must keep Steam"
 printf '%s\n' "$got" | grep -Fx '.ollama' >/dev/null || fail "excludes must keep ollama"
+printf '%s\n' "$got" | grep -Fx '.config/omarchy/plugins' >/dev/null && fail "must not exclude all Omarchy plugins"
+printf '%s\n' "$got" | grep -q 'omaclone.plugin' || fail "must exclude omaclone.plugin"
+printf '%s\n' "$got" | grep -q 'restore-staging' || fail "must exclude restore-staging from rsync --delete"
+grep -q 'filter.*data' "$ROOT/scripts/cmd-restore.sh" \
+  || fail "etc tar extract must use tarfile data filter"
+grep -q -- '--delete-after' "$ROOT/scripts/cmd-restore.sh" \
+  || fail "restore --delete must use --delete-after"
 
 rsrc=$(mktemp -d)
 rdst=$(mktemp -d)
@@ -124,6 +131,27 @@ rsync -a --delete "${rsync_excludes[@]}" "$rsrc"/ "$rdst"/ >/dev/null 2>&1
 [[ -f "$rdst/keep/file" ]] || fail "identity file missing after rsync"
 [[ ! -f "$rdst/extra-should-go" ]] || fail "--delete should remove extra dest files outside excludes"
 rm -rf "$rsrc" "$rdst"
+
+# Nested --delete must not unlink live restore-staging under $HOME.
+nested=$(mktemp -d)
+export HOME="$nested"
+export NAS_BACKUP_STATE_DIR="$nested/.local/share/omaclone"
+mkdir -p "$NAS_BACKUP_STATE_DIR/restore-staging/omaclone-restore.XXXXXX/keep" \
+  "$nested/.local/share/Steam"
+echo staged >"$NAS_BACKUP_STATE_DIR/restore-staging/omaclone-restore.XXXXXX/keep/file"
+echo game >"$nested/.local/share/Steam/app"
+src_home=$(mktemp -d)
+echo ident >"$src_home/hello"
+rsync_excludes=()
+while IFS= read -r rel; do
+  [[ -z "$rel" ]] && continue
+  rsync_excludes+=(--exclude "$rel")
+done < <(_restore_rsync_excludes)
+rsync -a --delete --delete-after "${rsync_excludes[@]}" "$src_home"/ "$HOME"/ >/dev/null 2>&1
+[[ -f "$NAS_BACKUP_STATE_DIR/restore-staging/omaclone-restore.XXXXXX/keep/file" ]] \
+  || fail "--delete wiped live restore-staging"
+[[ -f "$HOME/hello" ]] || fail "identity file missing after nested --delete"
+rm -rf "$nested" "$src_home"
 
 tardir=$(mktemp -d)
 mkdir -p "$tardir/etc/fido2"

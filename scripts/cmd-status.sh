@@ -338,8 +338,7 @@ cmd_location() {
       local prev
       prev=$(location_active_id)
       _setup_pick_destination
-      _setup_init_repo
-      _setup_accept_defer $? || return
+      _setup_init_step || return
       _setup_register_location
       local id="$LOCATION_LAST_ID"
       if [[ -n "$prev" && "$prev" != "$id" ]]; then
@@ -522,6 +521,7 @@ cmd_install() {
     systemctl --user daemon-reload
     location_schedule_apply
     loginctl enable-linger "$USER" 2>/dev/null || true
+    config_set install.linger 1
 
     if have omarchy; then
       omarchy plugin enable "$PLUGIN_ID" --section right --after omarchy.tray 2>/dev/null || \
@@ -551,12 +551,16 @@ cmd_uninstall() {
         omarchy-shell shell setPluginEnabled "$PLUGIN_ID" false >/dev/null 2>&1 || true
     fi
     local unit_dir="$HOME/.config/systemd/user"
-    systemctl --user disable --now omaclone.timer omaclone-prune.timer omaclone-keyring-retry.service 2>/dev/null || true
+    systemctl --user disable --now omaclone.timer omaclone-prune.timer \
+      omaclone.service omaclone-prune.service omaclone-keyring-retry.service 2>/dev/null || true
     rm -f "$unit_dir/omaclone.service" "$unit_dir/omaclone.timer" \
       "$unit_dir/omaclone-prune.service" "$unit_dir/omaclone-prune.timer" \
       "$unit_dir/omaclone-keyring-retry.service"
     systemctl --user daemon-reload 2>/dev/null || true
-    if is_tty && have gum; then
+    if [[ "$(config_get install.linger)" == 1 ]]; then
+      loginctl disable-linger "$USER" 2>/dev/null || true
+      config_set install.linger ""
+    elif is_tty && have gum; then
       if tui_confirm --default=false "Disable lingering login so timers do not run after logout?"; then
         loginctl disable-linger "$USER" 2>/dev/null || true
       fi

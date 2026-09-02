@@ -23,7 +23,7 @@ ensure_cifs_utils() {
     return 0
   fi
   echo "Installing cifs-utils…" >&2
-  sudo pacman -S --needed --noconfirm cifs-utils
+  sudo_tty pacman -S --needed --noconfirm cifs-utils
 }
 
 _cifs_shred_cred() {
@@ -55,10 +55,10 @@ _cifs_probe() {
   cred=$(_smb_cred_file) || { rmdir "$tmp" 2>/dev/null || true; return 1; }
   _cifs_write_cred "$user" "$cred" || { _cifs_shred_cred "$cred"; rmdir "$tmp"; return 1; }
   if command -v timeout >/dev/null 2>&1; then
-    timeout 15 sudo_noninteractive mount -t cifs "$uri" "$tmp" \
+    timeout 15 sudo_tty mount -t cifs -- "$uri" "$tmp" \
       -o "credentials=${cred},ro,vers=3.0,nosuid,nodev,noexec,_netdev" || rc=$?
   else
-    sudo_noninteractive mount -t cifs "$uri" "$tmp" \
+    sudo_tty mount -t cifs -- "$uri" "$tmp" \
       -o "credentials=${cred},ro,vers=3.0,nosuid,nodev,noexec,_netdev" || rc=$?
   fi
   sudo_noninteractive umount -l "$tmp" 2>/dev/null || true
@@ -99,6 +99,7 @@ setup() {
   cifs_validate_unc "$uri" || exit 1
   nfs_validate_mountpoint "$mountpoint" || exit 1
   [[ -n "$user" ]] || { printf '%s\n' "SMB username is required" >&2; exit 1; }
+  [[ "$user" != *$'\n'* && "$user" != *$','* && "$user" != -* ]] || { printf '%s\n' "SMB username is invalid." >&2; exit 1; }
 
   if ! transport_secret_get smb-password >/dev/null; then
     echo "Store the SMB password in the keyring (not in config)." >&2
@@ -128,6 +129,9 @@ mount() {
   uri=$(cfg transport.uri)
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
   user=$(cfg transport.username "$USER")
+  cifs_validate_unc "$uri" || exit 1
+  omaclone_validate_mountpoint "$mountpoint" >/dev/null || exit 1
+  [[ "$user" != *$'\n'* && "$user" != *$','* && "$user" != -* ]] || { printf '%s\n' "SMB username is invalid." >&2; exit 1; }
   if mount_is_type "$mountpoint" cifs; then
     exit 0
   fi
@@ -136,7 +140,7 @@ mount() {
   trap '_cifs_shred_cred "'"$cred"'"' EXIT INT TERM HUP
   _cifs_write_cred "$user" "$cred"
   local rc=0
-  sudo_noninteractive mount -t cifs "$uri" "$mountpoint" \
+  sudo_noninteractive mount -t cifs -- "$uri" "$mountpoint" \
     -o "credentials=${cred},uid=$(command id -u),gid=$(command id -g),file_mode=0600,dir_mode=0700,vers=3.0,nosuid,nodev,noexec,_netdev" \
     || rc=$?
   _cifs_shred_cred "$cred"
@@ -147,6 +151,8 @@ mount() {
 unmount() {
   local mountpoint
   mountpoint=$(cfg transport.mountpoint /mnt/omaclone)
+  omaclone_validate_mountpoint "$mountpoint" >/dev/null || return 0
+  mount_is_type "$mountpoint" cifs || return 0
   sudo_noninteractive umount "$mountpoint" 2>/dev/null || true
 }
 

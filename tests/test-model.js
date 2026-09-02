@@ -6,7 +6,7 @@ const assert = require("assert");
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8");
 const ctx = { console };
 vm.createContext(ctx);
-vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, shouldApplyStatus, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectionLabel, connectedLabels, locationCloneText, retentionPresets, retentionLabel, retentionShort, retentionRank, retentionTighter };", ctx);
+vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, shouldApplyStatus, watchPathAllowed, watchPathsEqual, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectionLabel, connectedLabels, locationCloneText, retentionPresets, retentionLabel, retentionShort, retentionRank, retentionTighter };", ctx);
 const M = ctx.Model;
 
 function fixture(overrides) {
@@ -124,12 +124,26 @@ assert.strictEqual(M.connectionLabel({ backend: "s3", connected: true, active: t
 assert.strictEqual(M.connectionLabel({ backend: "nfs", connected: true, active: true }, false), "connected")
 assert.strictEqual(M.connectionLabel({ backend: "sftp", connected: false, active: true }, false), "offline")
 
-assert.strictEqual(M.shouldApplyStatus(false, "nas", { locationId: "s3-aws" }), false, "stale id must not apply even when not switching")
+assert.strictEqual(M.shouldApplyStatus(false, "s3-aws", { locationId: "nas" }), true, "failed switch recovery")
+assert.strictEqual(M.shouldApplyStatus(false, "nas", { locationId: "s3-aws" }), true, "filter only while switching")
+assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "nas" }), false)
 assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "s3-aws" }), true)
-assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "nas" }), false, "switching must ignore stale NAS status")
 assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", { locationId: "" }), false)
 assert.strictEqual(M.shouldApplyStatus(true, "s3-aws", null), false)
 assert.strictEqual(M.shouldApplyStatus(true, "", { locationId: "s3-aws" }), false)
+
+assert.strictEqual(M.watchPathAllowed("/dev/disk/by-uuid/AAAA-1111"), true)
+assert.strictEqual(M.watchPathAllowed("/mnt/omaclone"), false)
+assert.strictEqual(M.watchPathAllowed("/dev/sda1"), false)
+assert.strictEqual(M.watchPathAllowed("/dev/disk/by-uuid/../sda1"), false)
+assert.strictEqual(M.watchPathAllowed(""), false)
+
+assert.ok(M.watchPathsEqual(["/dev/disk/by-uuid/AAAA-1111"], ["/dev/disk/by-uuid/AAAA-1111"]))
+assert.ok(M.watchPathsEqual(["b", "a"], ["a", "b"]))
+assert.ok(M.watchPathsEqual([], []))
+assert.ok(M.watchPathsEqual(null, []))
+assert.ok(!M.watchPathsEqual(["a"], ["b"]))
+assert.ok(!M.watchPathsEqual(["a"], ["a", "b"]))
 
 const extra = M.parseStatus('{"ok":true,"locationId":"nas","evil":"<b>x</b>"}')
 assert.strictEqual(extra.evil, undefined, "parseStatus must drop unknown JSON keys")

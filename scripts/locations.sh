@@ -118,25 +118,9 @@ location_drop() {
 }
 
 location_forget_absent_disks() {
-  local id backend uuid live kit
-  if location_destination_edit_held; then
-    return 0
-  fi
-  while IFS= read -r id; do
-    [[ -n "$id" ]] || continue
-    backend=$(location_get "$id" backend)
-    [[ "$backend" == disk ]] || continue
-    uuid=$(location_get "$id" uuid)
-    if [[ -z "$uuid" || ! -e "/dev/disk/by-uuid/$uuid" ]]; then
-      continue
-    fi
-    live=$(findmnt -n -o TARGET -S "/dev/disk/by-uuid/$uuid" 2>/dev/null | head -n 1)
-    [[ -n "$live" ]] || continue
-    kit=$(omaclone_kit_dir "$live")
-    if [[ ! -f "$kit/repo/config" && ! -d "$kit/repo/snapshots" && ! -f "$kit/.omaclone-bootstrap" && ! -f "$kit/restore" ]]; then
-      location_drop "$id"
-    fi
-  done < <(location_ids)
+  # Never auto-drop a saved location from status/list. Empty USB with a
+  # colliding UUID used to delete the row; require `location remove`.
+  return 0
 }
 
 location_ids_add() {
@@ -430,7 +414,6 @@ location_destination_edit_end() {
   eval "exec ${OMACLONE_DEST_LOCK_FD}>&-"
   OMACLONE_DEST_LOCK_FD=""
   OMACLONE_DEST_LOCK_DEPTH=0
-  rm -f "$path"
 }
 
 location_destination_edit_held() {
@@ -501,18 +484,18 @@ location_connected() {
     nfs)
       [[ -n "$mp" ]] || return 1
       _location_wake "$mp"
-      findmnt -n -t nfs,nfs4 "$mp" >/dev/null 2>&1
+      findmnt -n -M "$mp" -t nfs,nfs4 >/dev/null 2>&1
       ;;
     cifs)
       [[ -n "$mp" ]] || return 1
       _location_wake "$mp"
-      findmnt -n -t cifs "$mp" >/dev/null 2>&1
+      findmnt -n -M "$mp" -t cifs >/dev/null 2>&1
       ;;
     local)
       [[ -n "$repo" && -d "$(dirname "$repo")" ]] || return 1
-      if [[ -n "$mp" ]] && findmnt -n "$mp" >/dev/null 2>&1; then
+      if [[ -n "$mp" ]] && findmnt -n -M "$mp" >/dev/null 2>&1; then
         _location_wake "$mp"
-        fstype=$(findmnt -n -o FSTYPE "$mp" 2>/dev/null | awk '$1 != "" && $1 != "autofs" { print; exit }')
+        fstype=$(findmnt -n -M "$mp" -o FSTYPE 2>/dev/null | awk '$1 != "" && $1 != "autofs" { print; exit }')
         [[ -n "$fstype" ]]
         return
       fi
@@ -762,7 +745,7 @@ def connected(loc: dict) -> bool:
         if not mp:
             return False
         try:
-            subprocess.check_call(["findmnt", "-n", "-t", "nfs,nfs4", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.check_call(["findmnt", "-n", "-M", mp, "-t", "nfs,nfs4"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
         except (OSError, subprocess.CalledProcessError):
             return False
@@ -770,7 +753,7 @@ def connected(loc: dict) -> bool:
         if not mp:
             return False
         try:
-            subprocess.check_call(["findmnt", "-n", "-t", "cifs", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.check_call(["findmnt", "-n", "-M", mp, "-t", "cifs"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
         except (OSError, subprocess.CalledProcessError):
             return False
@@ -779,11 +762,11 @@ def connected(loc: dict) -> bool:
             return False
         if mp:
             try:
-                subprocess.check_call(["findmnt", "-n", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.check_call(["findmnt", "-n", "-M", mp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except (OSError, subprocess.CalledProcessError):
                 return not (mp.startswith("/mnt/") or mp.startswith("/media/") or mp.startswith("/run/media/"))
             try:
-                out = subprocess.check_output(["findmnt", "-n", "-o", "FSTYPE", mp], text=True, stderr=subprocess.DEVNULL)
+                out = subprocess.check_output(["findmnt", "-n", "-M", mp, "-o", "FSTYPE"], text=True, stderr=subprocess.DEVNULL)
             except (OSError, subprocess.CalledProcessError):
                 return False
             return any(line.strip() and line.strip() != "autofs" for line in out.splitlines())

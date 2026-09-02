@@ -282,6 +282,8 @@ setup_start_over() {
     rm -f "$NAS_BACKUP_STATE_DIR/last-result-${id}.json" \
           "$NAS_BACKUP_STATE_DIR/repo-stats-${id}.json" 2>/dev/null || true
   done < <(location_ids 2>/dev/null || true)
+  location_clear_live
+  stop_keyring_retry
   config_drop locations
   config_drop transport
   config_drop destination
@@ -292,6 +294,7 @@ setup_start_over() {
   config_set secrets.vault ""
   config_set secrets.item ""
   config_set secrets.field ""
+  config_set install.linger ""
 }
 
 setup_abandon_destination() {
@@ -884,7 +887,7 @@ password_offer_keyring_store() {
   local offer
   offer=$(config_get secrets.keyring_offer "")
   [[ "$offer" != "declined" && "$offer" != "stored" ]] || return 0
-  [[ -n "${NAS_BACKUP_PWFILE:-}" && -s "${NAS_BACKUP_PWFILE:-}" ]] || return 0
+  [[ -n "${NAS_BACKUP_PWFD:-}" ]] || return 0
 
   if ! nas_backup_backend_available secrets keyring; then
     if tui_confirm "Install GNOME Keyring support (libsecret) so omaclone can store the password?"; then
@@ -897,7 +900,7 @@ password_offer_keyring_store() {
   local describe
   describe=$(nas_backup_backend_describe secrets "$configured_backend" | head -n 1)
   if tui_confirm "Store the restic password in the local keyring so omaclone doesn't need $describe on every run?"; then
-    if nas_backup_backend_run secrets keyring put <"$NAS_BACKUP_PWFILE" 2>/dev/null; then
+    if password_fd_contents | nas_backup_backend_run secrets keyring put 2>/dev/null; then
       config_set secrets.backend keyring
       config_set secrets.keyring_offer stored
       tui_note "Password stored in the keyring. Future runs will use it directly."
@@ -973,10 +976,10 @@ password_load() {
 
   if ! is_tty || ! have gum; then
     if secrets_try_get "$backend"; then
+      _password_seal
       if [[ "${NAS_BACKUP_CLEAR_CLIPBOARD:-}" == "1" ]] && have wl-copy; then
         wl-copy --clear 2>/dev/null || true
       fi
-      _password_seal
       return 0
     fi
     password_cleanup
@@ -990,11 +993,11 @@ password_load() {
 
   while true; do
     if secrets_try_get "$backend"; then
+      _password_seal
       if [[ "${NAS_BACKUP_CLEAR_CLIPBOARD:-}" == "1" ]] && have wl-copy; then
         wl-copy --clear 2>/dev/null || true
       fi
       password_after_get_offers "$backend"
-      _password_seal
       return 0
     fi
     errtext="${NAS_BACKUP_SECRETS_ERRTEXT:-}"
@@ -1043,11 +1046,11 @@ password_load() {
         ;;
       "Paste the password this time")
         if secrets_try_get prompt; then
+          _password_seal
           if [[ "${NAS_BACKUP_CLEAR_CLIPBOARD:-}" == "1" ]] && have wl-copy; then
             wl-copy --clear 2>/dev/null || true
           fi
           password_after_get_offers "$backend"
-          _password_seal
           return 0
         fi
         ;;
@@ -1104,14 +1107,35 @@ transport_prepare_env() {
   fi
 }
 
-restic_exec() {
-  local repo extra=() s3region
-  repo=$(restic_repo)
-  [[ -n "$repo" ]] || die "restic.repo is not set; run: omaclone setup"
+restic_env_exec() {
   if [[ -z "${NAS_BACKUP_PWFD:-}" ]]; then
     die "password file missing"
   fi
   NAS_BACKUP_PWFILE="/dev/fd/${NAS_BACKUP_PWFD}"
+  (
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
+          AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_SHARED_CREDENTIALS_FILE \
+          AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI
+    export AWS_EC2_METADATA_DISABLED=true
+    export AWS_SHARED_CREDENTIALS_FILE=/dev/null
+    if [[ -n "${NAS_BACKUP_ENVFILE:-}" && -f "$NAS_BACKUP_ENVFILE" ]]; then
+      set -a
+      # shellcheck disable=SC1090
+      source "$NAS_BACKUP_ENVFILE"
+      set +a
+    elif [[ -n "${NAS_BACKUP_ENV_EXPORTS:-}" ]]; then
+      set -a
+      eval "$NAS_BACKUP_ENV_EXPORTS"
+      set +a
+    fi
+    restic --password-file "$NAS_BACKUP_PWFILE" "$@"
+  )
+}
+
+restic_exec() {
+  local repo extra=() s3region
+  repo=$(restic_repo)
+  [[ -n "$repo" ]] || die "restic.repo is not set; run: omaclone setup"
   case "$repo" in
     s3:*|sftp:*) ;;
     *)
@@ -1140,21 +1164,7 @@ restic_exec() {
       extra+=(-o "s3.bucket-lookup=${lookup}")
     fi
   fi
-  (
-    unset AWS_PROFILE AWS_DEFAULT_PROFILE
-    export AWS_EC2_METADATA_DISABLED=true
-    if [[ -n "${NAS_BACKUP_ENVFILE:-}" && -f "$NAS_BACKUP_ENVFILE" ]]; then
-      set -a
-      # shellcheck disable=SC1090
-      source "$NAS_BACKUP_ENVFILE"
-      set +a
-    elif [[ -n "${NAS_BACKUP_ENV_EXPORTS:-}" ]]; then
-      set -a
-      eval "$NAS_BACKUP_ENV_EXPORTS"
-      set +a
-    fi
-    restic --password-file "$NAS_BACKUP_PWFILE" --repo "$repo" "${extra[@]}" "$@"
-  )
+  restic_env_exec --repo "$repo" "${extra[@]}" "$@"
 }
 
 write_last_result() {
@@ -1363,11 +1373,14 @@ etc_rel_ok() {
   [[ "$rel" == ./* || "$rel" == */./* || "$rel" == */. ]] && return 1
   local base="${rel%%/*}"
   case "$base" in
-    fstab|crypttab|hostname|hosts|passwd|group|shadow|gshadow|machine-id|mkinitcpio.conf|cryptsetup-keys.d|systemd|pam.d|polkit-1|cron|cron.d|cron.daily|ssl|ssh|ld.so.preload|rc.local|environment|profile|profile.d|modprobe.d)
+    fstab|crypttab|hostname|hosts|hosts.allow|hosts.deny|passwd|group|shadow|gshadow|machine-id|mkinitcpio.conf|cryptsetup-keys.d|systemd|pam.d|polkit-1|cron|cron.d|cron.daily|cron.hourly|cron.weekly|cron.monthly|ssl|ssh|ld.so.preload|ld.so.conf|ld.so.conf.d|rc.local|environment|profile|profile.d|modprobe.d|initcpio|mkinitcpio.d|bashrc)
       return 1 ;;
   esac
+  case "$base" in
+    ld.so*|cron.*|initcpio*|mkinitcpio*) return 1 ;;
+  esac
   case "$rel" in
-    *limine*|*grub*|NetworkManager/*|ssh/*|sudoers|sudoers.d/*|systemd/*|pam.d/*|polkit-1/*|cron.d/*|ssl/*|ld.so.preload|profile.d/*|modprobe.d/*)
+    *limine*|*grub*|NetworkManager/*|ssh/*|sudoers|sudoers.d/*|systemd/*|pam.d/*|polkit-1/*|cron.d/*|cron.*/*|ssl/*|ld.so.preload|ld.so.conf|ld.so.conf.d/*|profile.d/*|modprobe.d/*|initcpio/*)
       return 1 ;;
   esac
   return 0
@@ -1438,7 +1451,21 @@ split_package_lists() {
 
 staging_file() {
   local name="$1"
+  local root="${2:-}"
   local p
+  if [[ -n "$root" ]]; then
+    for p in \
+      "$root/.local/share/omaclone/staging/$name" \
+      "$root/.local/share/omarchy-backup/staging/$name" \
+      "$root/.local/share/nas-backup/staging/$name"
+    do
+      if [[ -e "$p" ]]; then
+        printf '%s\n' "$p"
+        return 0
+      fi
+    done
+    return 1
+  fi
   for p in \
     "$HOME/.local/share/omaclone/staging/$name" \
     "$HOME/.local/share/omarchy-backup/staging/$name" \

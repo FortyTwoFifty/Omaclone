@@ -31,6 +31,7 @@ Item {
   property bool refreshing: false
   property bool switching: false
   property string switchError: ""
+  property string switchTargetId: ""
   property string severity: "ok"
   property string issueTitle: ""
   property string issueKind: ""
@@ -45,6 +46,8 @@ Item {
   property int _statusRunGen: 0
   property bool _pendingRefresh: false
   property bool _statusBusy: false
+  property int _failStreak: 0
+  property string _switchPrevId: ""
   readonly property bool hasOfflineRemovable: {
     var src = locations || []
     for (var i = 0; i < src.length; i++) {
@@ -127,9 +130,47 @@ Item {
     _output = ""
     _error = ""
     refreshing = true
+    _failBackoffTimer.stop()
     watchdogTimer.restart()
     statusProc.command = [helperPath]
     statusProc.running = true
+  }
+
+  function _noteStatusFailure(err) {
+    _failStreak += 1
+    _pendingRefresh = false
+    if (_failStreak >= 3) {
+      lastError = String(err || "Status helper failed")
+      severity = "error"
+      issueTitle = "Status unreadable"
+    }
+    var delay = 1000
+    if (_failStreak === 2) delay = 5000
+    else if (_failStreak >= 3) delay = 30000
+    _failBackoffTimer.interval = delay
+    _failBackoffTimer.restart()
+  }
+
+  function _revertSwitch() {
+    var prev = String(_switchPrevId || "")
+    locationId = prev
+    var src = locations || []
+    var copy = []
+    for (var i = 0; i < src.length; i++) {
+      var item = src[i] || {}
+      var next = {}
+      for (var key in item) {
+        if (Object.prototype.hasOwnProperty.call(item, key)) next[key] = item[key]
+      }
+      next.active = prev !== "" && String(item.id) === prev
+      if (next.active) {
+        locationLabel = String(item.label || item.id || "")
+        locationSchedule = String(item.schedule || "on")
+      }
+      copy.push(next)
+    }
+    locations = copy
+    locationEpoch = Model.locationFingerprint(copy)
   }
 
   function _statusFinished() {
@@ -140,10 +181,12 @@ Item {
   function applyStatus(raw) {
     var parsed = Model.parseStatus(raw)
     if (parsed && parsed.lastError === "Failed to parse backup status") {
-      root._pendingRefresh = true
+      root._noteStatusFailure("Failed to parse backup status")
       return
     }
     if (!Model.shouldApplyStatus(switching, locationId, parsed)) return
+    _failStreak = 0
+    _failBackoffTimer.stop()
     configured = parsed.configured === true
     setupComplete = parsed.setupComplete === true
     transportReady = parsed.transportReady === true
@@ -170,6 +213,7 @@ Item {
     issueAcked = parsed.issueAcked === true
     connected = parsed.connected === true
     var nextWatch = String(parsed.watchPath || "")
+    if (!Model.watchPathAllowed(nextWatch)) nextWatch = ""
     if (nextWatch !== watchPath) watchPath = nextWatch
     var locs = parsed.locations
     if (locs && (Array.isArray(locs) || typeof locs.length === "number")) {
@@ -193,15 +237,14 @@ Item {
       locationLabel = ""
     }
     var paths = parsed.watchPaths
+    var pc = []
     if (paths && typeof paths.length === "number") {
-      var pc = []
       for (var p = 0; p < paths.length; p++) {
-        if (paths[p]) pc.push(String(paths[p]))
+        var wp = String(paths[p] || "")
+        if (Model.watchPathAllowed(wp)) pc.push(wp)
       }
-      watchPaths = pc
-    } else {
-      watchPaths = []
     }
+    if (!Model.watchPathsEqual(watchPaths, pc)) watchPaths = pc
     locationEpoch = Model.locationFingerprint(locations)
     if (_wantDiscover) {
       _wantDiscover = false
@@ -267,6 +310,8 @@ Item {
     repoSizeText = "—"
     repoSizeBytes = 0
     packedSizeText = ""
+    _switchPrevId = String(locationId || "")
+    switchTargetId = String(id)
     locationId = String(id)
     if (statusProc.running) statusProc.running = false
     watchdogTimer.restart()
@@ -287,7 +332,11 @@ Item {
     }
     locations = copy
     locationEpoch = Model.locationFingerprint(copy)
-    switchProc.command = [cliPath, "location", "switch", id, "--yes"]
+    var sid = String(id)
+    if (sid.charAt(0) === "-")
+      switchProc.command = [cliPath, "location", "switch", "--yes", "--", sid]
+    else
+      switchProc.command = [cliPath, "location", "switch", sid, "--yes"]
     switchProc.running = true
   }
 
@@ -310,7 +359,7 @@ Item {
       var stderr = String(statusStderr.text || "")
       if (stdout.trim() !== "") { root.applyStatus(stdout); root._fsWatchArmed = true; }
       else {
-        root._pendingRefresh = true
+        root._noteStatusFailure("Status helper failed")
       }
       root._statusFinished()
     }
@@ -325,8 +374,11 @@ Item {
     onExited: function(exitCode) {
       root.switching = false
       if (exitCode !== 0) {
-        var err = String(switchStderr.text || "").trim()
-        root.switchError = err !== "" ? err : "Failed to switch location"
+        if (root.switchError === "") {
+          var err = String(switchStderr.text || "").trim()
+          root.switchError = err !== "" ? err : "Failed to switch location"
+        }
+        root._revertSwitch()
       }
       root.refresh()
     }
@@ -400,8 +452,6 @@ Item {
     path: watchPath
     watchChanges: true
     printErrors: false
-    onLoaded: if (root._fsWatchArmed && root.watchPath !== "") _debounceTimer.restart()
-    onLoadFailed: if (root._fsWatchArmed && root.watchPath !== "") _debounceTimer.restart()
     onFileChanged: if (root._fsWatchArmed && root.watchPath !== "") _debounceTimer.restart()
   }
 
@@ -424,8 +474,6 @@ Item {
       path: modelData
       watchChanges: true
       printErrors: false
-      onLoaded: if (root._fsWatchArmed && path !== "") _debounceTimer.restart()
-      onLoadFailed: if (root._fsWatchArmed && path !== "") _debounceTimer.restart()
       onFileChanged: if (root._fsWatchArmed && path !== "") _debounceTimer.restart()
     }
   }
@@ -451,6 +499,14 @@ Item {
   }
 
   Timer {
+    id: _failBackoffTimer
+    interval: 1000
+    running: false
+    repeat: false
+    onTriggered: root.refresh()
+  }
+
+  Timer {
     id: watchdogTimer
     interval: 12000
     running: false
@@ -459,12 +515,15 @@ Item {
       root._statusGen += 1
       if (statusProc.running) statusProc.running = false
       root.refreshing = false
+      var wasBusy = root._statusBusy
+      root._statusBusy = false
       if (root.switching) {
         if (switchProc.running) switchProc.running = false
         root.switching = false
         root.switchError = "Location switch timed out"
+        root._revertSwitch()
         root.refresh()
-      } else if (root._statusBusy) {
+      } else if (wasBusy) {
         root.lastError = "Status helper failed"
         root.severity = "error"
         root.issueTitle = "Status unreadable"

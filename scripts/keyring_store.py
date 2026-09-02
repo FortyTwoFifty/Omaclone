@@ -52,7 +52,9 @@ def normalize_secret(data: bytes) -> bytes:
 
 def _file_store_dir() -> str | None:
     # Test-only: a directory of attribute files instead of GNOME Keyring.
-    # Production never sets OMACLONE_KEYRING_FILE.
+    # Production never sets OMACLONE_KEYRING_FILE; ignore it unless tests opted in.
+    if os.environ.get("OMACLONE_TEST", "").strip() != "1":
+        return None
     raw = os.environ.get("OMACLONE_KEYRING_FILE", "").strip()
     return raw or None
 

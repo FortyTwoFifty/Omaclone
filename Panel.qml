@@ -436,7 +436,7 @@ Panel {
               label: "KEEP"
               value: root.keepShort
               hint: root.keepText
-              clickable: true
+              clickable: backup.setupComplete
               onClicked: root.openRetention()
             }
           }
@@ -496,12 +496,14 @@ Panel {
               ConfirmButton {
                 width: (column.width - Style.space(8)) / 2
                 label: "Cancel"
+                accessibleName: "Cancel keep plan change"
                 destructive: false
                 onClicked: root.cancelRetention()
               }
               ConfirmButton {
                 width: (column.width - Style.space(8)) / 2
                 label: Model.retentionTighter(root.pendingPreset, backup.retentionPreset) ? "Confirm prune" : "Confirm"
+                accessibleName: Model.retentionTighter(root.pendingPreset, backup.retentionPreset) ? "Confirm prune" : "Confirm keep plan change"
                 destructive: Model.retentionTighter(root.pendingPreset, backup.retentionPreset)
                 onClicked: root.confirmRetention()
               }
@@ -601,9 +603,12 @@ Panel {
           label: backup.switchError !== "" ? "Retry switch" : (backup.issueKind === "password_locked" ? "Clone now" : "Retry clone")
           destructive: false
           onClicked: {
-            if (backup.switchError !== "") backup.switchLocation(backup.locationId)
-            else backup.launchTui(["clone"])
-            if (backup.switchError === "") root.closeForPopoutSwitch()
+            if (backup.switchError !== "") {
+              backup.switchLocation(backup.switchTargetId || backup.locationId)
+            } else {
+              backup.launchTui(["clone"])
+              root.closeForPopoutSwitch()
+            }
           }
         }
         ConfirmButton {
@@ -623,6 +628,7 @@ Panel {
     property string hint: ""
     property bool clickable: false
     signal clicked
+    Accessible.name: tile.label + " " + tile.value + (tile.hint ? " " + tile.hint : "")
 
     width: (statsRow.width - Style.space(8) * 2) / 3
     implicitHeight: Style.space(78)
@@ -685,8 +691,10 @@ Panel {
   component ConfirmButton: Item {
     id: confirmBtn
     property string label: ""
+    property string accessibleName: label
     property bool destructive: false
     signal clicked
+    Accessible.name: confirmBtn.accessibleName
     implicitHeight: Style.space(36)
 
     Rectangle {

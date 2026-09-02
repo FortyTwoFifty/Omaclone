@@ -16,6 +16,9 @@ grep -nE 'sudo[[:space:]]+".*prep.sh"' "$ROOT/scripts/cmd-clone.sh" \
 
 etc_rel_ok fido2 || fail "fido2 should be allowed"
 etc_rel_ok fstab && fail "fstab must be denied"
+etc_rel_ok 'ld.so.conf.d' && fail "ld.so.conf.d must be denied"
+etc_rel_ok 'cron.hourly' && fail "cron.hourly must be denied"
+etc_rel_ok initcpio && fail "initcpio must be denied"
 etc_rel_ok '../shadow' && fail "../shadow must be denied"
 etc_rel_ok 'fido2/./evil' && fail "fido2/./evil must be denied"
 etc_rel_ok 'fido2;id' && fail "fido2;id must be denied"

@@ -38,11 +38,17 @@ grep -q 'OnCalendar=' "$prune_timer" || fail "omaclone-prune.timer missing OnCal
 
 grep -q 'ExecStart=.*omaclone wait-keyring' "$retry" \
   || fail "keyring-retry.service must run wait-keyring"
-grep -q 'TimeoutStartSec=30min' "$retry" \
-  || fail "keyring-retry.service must set TimeoutStartSec=30min"
+grep -q 'TimeoutStartSec=21h' "$retry" \
+  || fail "keyring-retry.service must set TimeoutStartSec=21h"
 grep -q 'NoNewPrivileges=yes' "$retry" \
   || fail "keyring-retry.service must set NoNewPrivileges=yes"
 grep -q 'PrivateTmp=yes' "$retry" \
   || fail "keyring-retry.service must set PrivateTmp=yes"
+grep -q 'ProtectSystem=strict' "$unit" \
+  || fail "omaclone.service must set ProtectSystem=strict"
+grep -q 'ProtectSystem=strict' "$prune" \
+  || fail "omaclone-prune.service must set ProtectSystem=strict"
+grep -q 'ProtectSystem=strict' "$retry" \
+  || fail "keyring-retry.service must set ProtectSystem=strict"
 
 echo OK

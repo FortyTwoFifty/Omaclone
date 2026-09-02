@@ -55,11 +55,16 @@ nas_backup_backend_names() {
 nas_backup_backend_run() {
   local kind="$1" name="$2" verb="$3"
   shift 3 || true
-  local path
+  local path user_path shipped_path
   path=$(nas_backup_backend_find "$kind" "$name") || {
     log "backend not found: $kind/$name"
     return 1
   }
+  user_path="${NAS_BACKUP_USER_BACKENDS:-$NAS_BACKUP_USER_CONFIG_DIR/backends}/$kind/$name"
+  shipped_path="$NAS_BACKUP_ROOT/backends/$kind/$name"
+  if [[ "$path" == "$user_path" && -x "$shipped_path" ]]; then
+    log "using user backend $kind/$name (overrides shipped copy)"
+  fi
   export NAS_BACKUP_CONFIG NAS_BACKUP_ROOT NAS_BACKUP_USER_CONFIG_DIR
   export NAS_BACKUP_KIND="$kind" NAS_BACKUP_BACKEND="$name"
   "$path" "$verb" "$@"

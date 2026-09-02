@@ -53,12 +53,27 @@ function parseStatus(raw) {
 }
 
 function shouldApplyStatus(switching, targetId, parsed) {
-  if (!parsed || typeof parsed !== "object") return !switching
+  if (!switching) return true
+  if (!parsed || typeof parsed !== "object") return false
   var got = String(parsed.locationId || "")
   var want = String(targetId || "")
-  if (want !== "" && got !== "" && got !== want) return false
-  if (switching) return want !== "" && got === want
-  return true
+  return want !== "" && got !== "" && got === want
+}
+
+function watchPathAllowed(p) {
+  return /^\/dev\/disk\/by-uuid\/[0-9A-Fa-f-]+$/.test(String(p || ""))
+}
+
+function watchPathsEqual(a, b) {
+  function fingerprint(list) {
+    var out = []
+    if (list && typeof list.length === "number") {
+      for (var i = 0; i < list.length; i++) out.push(String(list[i] || ""))
+    }
+    out.sort()
+    return out.join("\0")
+  }
+  return fingerprint(a) === fingerprint(b)
 }
 
 function installedLocations(list) {
