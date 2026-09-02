@@ -7,6 +7,8 @@ grep -q 'StrictHostKeyChecking=yes' "$ROOT/backends/transport/sftp" \
   || fail "sftp should force StrictHostKeyChecking=yes"
 grep -q ' -- "' "$ROOT/backends/transport/sftp" \
   || fail "sftp ssh must use -- before user@host"
+grep -q 'scp .* -r --' "$ROOT/backends/transport/sftp" \
+  || fail "sftp scp must pass -r before -- so recursion is a flag"
 grep -q '_sftp_ident_ok' "$ROOT/backends/transport/sftp" \
   || fail "sftp must reject option-like usernames"
 
@@ -29,8 +31,9 @@ fi
 
 # restic URL shape for port 22 vs non-22
 export NAS_BACKUP_ROOT="$ROOT"
-NAS_BACKUP_CONFIG=$(mktemp)
-trap 'rm -f "$NAS_BACKUP_CONFIG"' EXIT
+_sftp_cfgdir=$(mktemp -d)
+trap 'rm -rf "$_sftp_cfgdir"' EXIT
+NAS_BACKUP_CONFIG="$_sftp_cfgdir/config.toml"
 cat >"$NAS_BACKUP_CONFIG" <<'TOML'
 [transport]
 backend = "sftp"

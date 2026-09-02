@@ -5,7 +5,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 export NAS_BACKUP_ROOT="$ROOT"
 NAS_BACKUP_USER_CONFIG_DIR=$(mktemp -d)
-trap 'rm -rf "$NAS_BACKUP_USER_CONFIG_DIR"' EXIT
+trap 'rm -rf "$NAS_BACKUP_USER_CONFIG_DIR" "${incomplete_dir:-}"' EXIT
 export NAS_BACKUP_USER_CONFIG_DIR
 export NAS_BACKUP_STATE_DIR="$NAS_BACKUP_USER_CONFIG_DIR/state"
 export NAS_BACKUP_CONFIG="$NAS_BACKUP_USER_CONFIG_DIR/config.toml"
@@ -87,14 +87,22 @@ case ",$ids," in
 esac
 printf '%s\n' "$ids" | grep -q nas || fail "compact dropped real nas"
 
-incomplete=$(mktemp)
-export NAS_BACKUP_CONFIG="$incomplete"
+# A toml sitting in /tmp must not chmod /tmp (EPERM on GitHub runners).
+loose=$(mktemp)
+python3 "$ROOT/scripts/config.py" "$loose" set transport.backend sftp \
+  || fail "config.py set must not fail when the file lives in /tmp"
+[[ "$(python3 "$ROOT/scripts/config.py" "$loose" get transport.backend)" == sftp ]] \
+  || fail "loose /tmp config was not written"
+rm -f "$loose" "$loose.lock"
+
+incomplete_dir=$(mktemp -d)
+export NAS_BACKUP_CONFIG="$incomplete_dir/config.toml"
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.backend nfs
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.uri "10.10.0.10:/export"
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set transport.mountpoint "/mnt/omaclone"
 migrate_locations
 [[ -z "$(config_get locations.ids)" ]] || fail "incomplete setup created locations: $(config_get locations.ids)"
-rm -f "$incomplete"
+rm -f "$NAS_BACKUP_CONFIG" "$NAS_BACKUP_CONFIG.lock"
 
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.ids "usb,nas"
 python3 "$ROOT/scripts/config.py" "$NAS_BACKUP_CONFIG" set locations.active usb
@@ -125,7 +133,7 @@ n_config=$(echo "$json_skip" | jq '[.[] | select(.source=="config")] | length')
 [[ "$n_config" -ge 2 ]] || fail "SKIP_DISCOVER: expected >=2 config entries, got $n_config"
 
 kit=$(mktemp -d)
-trap 'rm -rf "$NAS_BACKUP_USER_CONFIG_DIR" "$kit"' EXIT
+trap 'rm -rf "$NAS_BACKUP_USER_CONFIG_DIR" "${incomplete_dir:-}" "$kit"' EXIT
 mkdir -p "$kit/omaclone"
 touch "$kit/omaclone/restore" "$kit/omaclone/config.toml"
 unset OMACLONE_SKIP_DISCOVER

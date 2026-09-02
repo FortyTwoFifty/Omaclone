@@ -58,12 +58,25 @@ def _chmod(path: Path, mode: int) -> None:
     try:
         os.chmod(path, mode)
     except OSError as e:
-        if e.errno != errno.EOPNOTSUPP:
-            raise
+        # /tmp, FAT/NFS, and root-owned parents are not ours to tighten.
+        if e.errno in (errno.EOPNOTSUPP, errno.EPERM, errno.EACCES, errno.EROFS):
+            return
+        raise
 
 
 def _private_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    try:
+        st = path.stat()
+    except OSError:
+        return
+    if st.st_uid != os.getuid():
+        return
+    try:
+        if path.resolve() == Path.home().resolve():
+            return
+    except OSError:
+        pass
     _chmod(path, 0o700)
 
 
