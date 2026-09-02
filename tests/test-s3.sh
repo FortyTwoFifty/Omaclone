@@ -345,6 +345,8 @@ ready=$(printf '%s' "$json" | jq -r '.transportReady')
 conn=$(printf '%s' "$json" | jq -r '.connected')
 [[ "$ready" == false ]] || fail "status transportReady without keys: $ready"
 [[ "$conn" == true ]] || fail "s3 stays connected without keys: $conn"
+title=$(printf '%s' "$json" | jq -r '.issueTitle')
+[[ "$title" == "Keys missing" ]] || fail "s3 without keys should say Keys missing, got $title"
 
 doc=$(omaclone_cli doctor)
 printf '%s\n' "$doc" | grep -q "mounted: n/a (remote transport)" \

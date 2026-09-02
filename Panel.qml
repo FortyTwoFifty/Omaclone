@@ -92,6 +92,8 @@ Panel {
   readonly property string storageText: backup.configured ? Model.storageDisplay(root.activeLoc) : "—"
   readonly property string storageHintText: {
     if (!backup.configured) return "not set"
+    if (backup.transportReady === false && (backup.transport === "s3" || backup.transport === "sftp"))
+      return "keys missing"
     var labels = Model.connectedLabels(backup.locations)
     if (!labels.length) return "none connected"
     var hint = labels.length === 1 ? labels[0] + " connected" : labels.join(" · ") + " connected"
@@ -131,7 +133,7 @@ Panel {
     var clones = Model.locationCloneText(loc)
     if (clones) bits.push(clones)
     bits.push(loc.schedule === "on" ? "daily" : "manual")
-    bits.push(loc.connected ? "connected" : "offline")
+    bits.push(Model.connectionLabel(loc, backup.transportReady))
     return bits.join(" · ")
   }
 

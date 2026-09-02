@@ -16,6 +16,8 @@ export OMACLONE_SKIP_SYSTEMD=1
 unset NAS_BACKUP_LIB_LOADED OMACLONE_LOCATIONS_LOADED
 
 source "$ROOT/scripts/lib.sh"
+mode=$(stat -c '%a' "$NAS_BACKUP_USER_CONFIG_DIR" 2>/dev/null || stat -f '%OLp' "$NAS_BACKUP_USER_CONFIG_DIR")
+[[ "$mode" == 700 ]] || fail "config dir mode should be 700, got $mode"
 
 export OMACLONE_PLUGIN_DIR="$ROOT"
 omaclone_link_plugin

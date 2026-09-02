@@ -223,6 +223,7 @@ OMACLONE_CONFIG="$NAS_BACKUP_CONFIG"
 OMACLONE_STATE_DIR="$NAS_BACKUP_STATE_DIR"
 
 mkdir -p "$NAS_BACKUP_USER_CONFIG_DIR" "$NAS_BACKUP_STATE_DIR"
+chmod 700 "$NAS_BACKUP_USER_CONFIG_DIR" "$NAS_BACKUP_STATE_DIR" 2>/dev/null || true
 
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'omaclone: %s\n' "$*" >&2; exit 1; }

@@ -54,15 +54,27 @@ def get(path: Path, dotted: str, default: str = "") -> str:
     section, key = _split_dotted(dotted)
     return load(path).get(section, {}).get(key, default)
 
+def _chmod(path: Path, mode: int) -> None:
+    try:
+        os.chmod(path, mode)
+    except OSError as e:
+        if e.errno != errno.EOPNOTSUPP:
+            raise
+
+
+def _private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _chmod(path, 0o700)
+
+
 def _commit_lines(path: Path, lines: list[str]) -> None:
     text = "\n".join(lines).rstrip() + "\n"
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError as e:
-        if e.errno != errno.EOPNOTSUPP:
-            raise
+    _chmod(tmp, 0o600)
+    with tmp.open("r+b") as fh:
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, path)
 
 def _apply_key(lines: list[str], section: str, key: str, value: str) -> list[str]:
@@ -103,9 +115,10 @@ def set_key(path: Path, dotted: str, value: str) -> None:
     if "." not in dotted:
         raise SystemExit(f"config key must be section.key, got {dotted!r}")
     section, key = _split_dotted(dotted)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _private_dir(path.parent)
     lock_path = path.with_name(path.name + ".lock")
     with open(lock_path, "a", encoding="utf-8") as lock:
+        _chmod(lock_path, 0o600)
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             _set_key_unlocked(path, section, key, value)
@@ -115,9 +128,10 @@ def set_key(path: Path, dotted: str, value: str) -> None:
 def set_keys(path: Path, pairs: list[tuple[str, str]]) -> None:
     if not pairs:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _private_dir(path.parent)
     lock_path = path.with_name(path.name + ".lock")
     with open(lock_path, "a", encoding="utf-8") as lock:
+        _chmod(lock_path, 0o600)
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
@@ -139,6 +153,7 @@ def drop_section(path: Path, section: str) -> None:
         return
     lock_path = path.with_name(path.name + ".lock")
     with open(lock_path, "a", encoding="utf-8") as lock:
+        _chmod(lock_path, 0o600)
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -156,11 +171,10 @@ def drop_section(path: Path, section: str) -> None:
             text = ("\n".join(out).rstrip() + "\n") if out else ""
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_text(text, encoding="utf-8")
-            try:
-                os.chmod(tmp, 0o600)
-            except OSError as e:
-                if e.errno != errno.EOPNOTSUPP:
-                    raise
+            _chmod(tmp, 0o600)
+            with tmp.open("r+b") as fh:
+                fh.flush()
+                os.fsync(fh.fileno())
             os.replace(tmp, path)
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)

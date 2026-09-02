@@ -81,6 +81,14 @@ source "$ROOT/scripts/lib.sh"
 source "$ROOT/scripts/cmd-restore.sh"
 grep -q 'OMACLONE_TEST' "$ROOT/scripts/cmd-restore.sh" \
   || fail "--blank-omarchy must be gated on OMACLONE_TEST"
+grep -q 'Type TRUST' "$ROOT/scripts/restore" \
+  || fail "kit restore must re-prompt before using kit config.toml"
+grep -q '_restore_check_space' "$ROOT/scripts/cmd-restore.sh" \
+  || fail "restore must check free space before restic restore"
+grep -q 'pacman -Qqen' "$ROOT/scripts/lib.sh" \
+  || fail "identity list must use pacman -Qqen (native only)"
+grep -q '_setup_ensure_transport' "$ROOT/scripts/cmd-restore.sh" \
+  || fail "restore must re-enter transport keys when ready() fails"
 
 export XDG_RUNTIME_DIR="$OMACLONE_TEST_HOME/runtime"
 mkdir -p "$XDG_RUNTIME_DIR"

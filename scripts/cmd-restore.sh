@@ -231,6 +231,18 @@ cmd_restore() {
   trap '_restore_cleanup; _nas_backup_on_signal INT' INT
   trap '_restore_cleanup; _nas_backup_on_signal TERM' TERM
 
+  _restore_check_space() {
+    local dest="$1" need avail
+    need=$(restic_exec stats "$id" --mode restore-size --json 2>/dev/null | jq -r '.total_size // empty')
+    [[ "$need" =~ ^[1-9][0-9]*$ ]] || return 0
+    avail=$(df -B1 --output=avail "$dest" 2>/dev/null | awk 'NR==2 { print; exit }')
+    [[ "$avail" =~ ^[0-9]+$ ]] || return 0
+    if (( avail < need + need / 5 )); then
+      die "not enough free space under $dest to restore this snapshot (need ~$need bytes, have $avail)"
+    fi
+  }
+  _restore_check_space "$NAS_BACKUP_STATE_DIR"
+
   log "restoring snapshot $id to $staging…"
   set +e
   restic_exec restore "$id" --target "$staging" --verify --json | restic_json_progress

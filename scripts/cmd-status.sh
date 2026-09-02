@@ -194,6 +194,10 @@ cmd_status() {
       issueTitle="Location not connected"
       [[ -n "$message" ]] || message="Plug in or mount the clone location, then retry."
     fi
+  elif [[ "$ready" != true && ( "$transport" == s3 || "$transport" == sftp ) && "$acked" != true ]]; then
+    severity=warning
+    issueTitle="Keys missing"
+    [[ -n "$message" ]] || message="Unlock the Omaclone keyring or re-enter $transport keys, then retry."
   elif [[ "$status" == skip ]] && issue_is_password_skip "$reason" "$message"; then
     if [[ "$acked" != true ]]; then
       severity=warning
@@ -552,6 +556,13 @@ cmd_uninstall() {
       "$unit_dir/omaclone-prune.service" "$unit_dir/omaclone-prune.timer" \
       "$unit_dir/omaclone-keyring-retry.service"
     systemctl --user daemon-reload 2>/dev/null || true
+    if is_tty && have gum; then
+      if tui_confirm --default=false "Disable lingering login so timers do not run after logout?"; then
+        loginctl disable-linger "$USER" 2>/dev/null || true
+      fi
+    else
+      log "lingering login was not disabled; to disable: loginctl disable-linger $USER"
+    fi
   fi
   omaclone_unlink_cli
   omaclone_unlink_plugin
@@ -559,7 +570,6 @@ cmd_uninstall() {
   log "removed PATH command, timers, plugin symlink, and Super+Space menu entries"
   log "config (~/.config/omaclone) and clones were not deleted"
   log "NFS/disk systemd mounts in /etc/systemd/system were not removed (needs sudo)"
-  log "lingering login was not disabled; to disable: loginctl disable-linger $USER"
   log "if the bar widget is still a git clone: omarchy plugin remove $PLUGIN_ID"
 }
 

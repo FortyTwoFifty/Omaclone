@@ -166,6 +166,14 @@ function storageHint(loc, status) {
   return bits.join(" · ")
 }
 
+function connectionLabel(loc, transportReady) {
+  if (!loc || loc.connected !== true) return "offline"
+  var backend = String(loc.backend || "")
+  if ((backend === "s3" || backend === "sftp") && loc.active && transportReady === false)
+    return "keys missing"
+  return "connected"
+}
+
 function connectedLabels(list) {
   var out = []
   var rows = paneLocations(list)
