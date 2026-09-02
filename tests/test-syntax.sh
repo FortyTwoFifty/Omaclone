@@ -35,6 +35,7 @@ python3 -m py_compile "$ROOT"/scripts/*.py "$ROOT"/tests/s3_create_bucket.py || 
 "$ROOT/scripts/omaclone" -h | grep -q verify || fail "usage missing verify"
 "$ROOT/scripts/omaclone" -h | grep -q estimate || fail "usage missing estimate"
 "$ROOT/scripts/omaclone" -h | grep -q copy || fail "usage missing copy"
+"$ROOT/scripts/omaclone" -h | grep -q "location stats" || fail "usage missing location stats"
 [[ -f "$ROOT/scripts/cmd-setup.sh" ]] || fail "cmd-setup.sh missing"
 [[ -f "$ROOT/scripts/cmd-clone.sh" ]] || fail "cmd-clone.sh missing"
 [[ -f "$ROOT/scripts/cmd-restore.sh" ]] || fail "cmd-restore.sh missing"

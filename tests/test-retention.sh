@@ -93,6 +93,37 @@ if local_snapshot_count; then
   fail "(d) s3 repo should not return success"
 fi
 
+[[ "$(clone_count_label 0)" == "0 clones" ]] || fail "clone_count_label 0"
+[[ "$(clone_count_label 1)" == "1 clone" ]] || fail "clone_count_label 1"
+[[ "$(clone_count_label 7)" == "7 clones" ]] || fail "clone_count_label 7"
+
+config_set restic.repo "$local_repo_dir"
+config_set locations.ids local
+config_set locations.active local
+rm -f "$NAS_BACKUP_STATE_DIR"/repo-stats*.json
+n=$(record_clone_count local) || fail "(e) record_clone_count failed"
+[[ "$n" == 3 ]] || fail "(e) record_clone_count: $n (want 3)"
+[[ -f "$NAS_BACKUP_STATE_DIR/repo-stats-local.json" ]] || fail "(e) missing per-location stats"
+got=$(jq -r '.snapshotCount' "$NAS_BACKUP_STATE_DIR/repo-stats-local.json")
+[[ "$got" == 3 ]] || fail "(e) cached snapshotCount: $got"
+
+rm -f "$NAS_BACKUP_STATE_DIR"/repo-stats*.json
+n=$(refresh_clone_count_on_connect local) || fail "(e2) refresh on connect failed"
+[[ "$n" == 3 ]] || fail "(e2) refresh on connect: $n (want 3)"
+got=$(jq -r '.snapshotCount' "$NAS_BACKUP_STATE_DIR/repo-stats-local.json")
+[[ "$got" == 3 ]] || fail "(e2) cached after connect: $got"
+
+# Setup of a new location must not overwrite another location's cache.
+write_repo_stats 9 0 0 other
+rm -f "$NAS_BACKUP_STATE_DIR/repo-stats.json"
+n=$(record_clone_count "") || fail "(f) record with empty loc id failed"
+[[ "$n" == 3 ]] || fail "(f) global record: $n (want 3)"
+[[ -f "$NAS_BACKUP_STATE_DIR/repo-stats.json" ]] || fail "(f) missing global stats"
+got=$(jq -r '.snapshotCount' "$NAS_BACKUP_STATE_DIR/repo-stats-other.json")
+[[ "$got" == 9 ]] || fail "(f) must not clobber other location cache: $got"
+got=$(jq -r '.locationId' "$NAS_BACKUP_STATE_DIR/repo-stats.json")
+[[ "$got" == "" ]] || fail "(f) global locationId should be empty, got $got"
+
 if grep -qi password "$NAS_BACKUP_CONFIG"; then
   fail "password leaked into config"
 fi

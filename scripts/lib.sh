@@ -371,8 +371,10 @@ retention_forget_args() {
 }
 
 write_repo_stats() {
-  local count="${1:-0}" restore="${2:-0}" packed="${3:-0}" loc_id="${4:-}"
-  if [[ -z "$loc_id" ]]; then
+  local count="${1:-0}" restore="${2:-0}" packed="${3:-0}" loc_id
+  if (($# >= 4)); then
+    loc_id="$4"
+  else
     loc_id=$(config_get locations.active 2>/dev/null || true)
   fi
   mkdir -p "$NAS_BACKUP_STATE_DIR"
@@ -593,6 +595,99 @@ local_snapshot_count() {
   done
   printf '%s\n' "$count"
   return 0
+}
+
+clone_count_label() {
+  local n="${1:-0}"
+  if [[ "$n" == 1 ]]; then
+    printf '%s\n' "1 clone"
+  else
+    printf '%s\n' "$n clones"
+  fi
+}
+
+# Count clones in the active repo and cache them for status/GUI.
+# Local mounts count the snapshots/ directory (no password). Remote
+# (S3/SFTP) needs a loaded password and transport_prepare_env.
+# Pass an explicit location id (empty string = write the global cache only).
+record_clone_count() {
+  local loc_id count restore packed=0 table rc
+  if (($# >= 1)); then
+    loc_id="$1"
+  else
+    loc_id=$(config_get locations.active 2>/dev/null || true)
+  fi
+
+  if count=$(local_snapshot_count 2>/dev/null); then
+    read -r _ restore packed < <(read_repo_stats)
+    [[ "$restore" =~ ^[0-9]+$ ]] || restore=0
+    [[ "$packed" =~ ^[0-9]+$ ]] || packed=0
+    write_repo_stats "$count" "$restore" "$packed" "$loc_id"
+    printf '%s\n' "$count"
+    return 0
+  fi
+
+  [[ -n "${NAS_BACKUP_PWFD:-}" ]] || return 1
+  set +e
+  table=$(restic_exec snapshots --json 2>/dev/null)
+  rc=$?
+  set -e
+  [[ $rc -eq 0 && -n "$table" ]] || return 1
+  count=$(printf '%s' "$table" | jq 'if type == "array" then length else empty end' 2>/dev/null || true)
+  [[ "$count" =~ ^[0-9]+$ ]] || return 1
+  restore=$(printf '%s' "$table" | jq -r '
+    if type == "array" and length > 0
+      then ([.[]] | max_by(.time) | .summary.total_bytes_processed // 0)
+      else 0 end
+  ' 2>/dev/null || echo 0)
+  [[ "$restore" =~ ^[0-9]+$ ]] || restore=0
+  read -r _ _ packed < <(read_repo_stats)
+  [[ "$packed" =~ ^[0-9]+$ ]] || packed=0
+  write_repo_stats "$count" "$restore" "$packed" "$loc_id"
+  printf '%s\n' "$count"
+}
+
+# Best-effort clone count when a location becomes active/connected.
+# Never prompts. Never dies. Local mounts are cheap; S3/SFTP list
+# snapshots once (bounded) and cache — status polls keep using the cache.
+refresh_clone_count_on_connect() {
+  local loc_id="${1:-}" count backend secrets
+  if [[ -z "$loc_id" ]]; then
+    loc_id=$(location_active_id 2>/dev/null || true)
+  fi
+
+  if count=$(record_clone_count "$loc_id" 2>/dev/null); then
+    printf '%s\n' "$count"
+    return 0
+  fi
+
+  declare -F nas_backup_backend_run >/dev/null 2>&1 || return 1
+  declare -F secrets_try_get >/dev/null 2>&1 || return 1
+  backend=$(config_get transport.backend)
+  [[ -n "$backend" ]] || return 1
+  nas_backup_backend_run transport "$backend" ready >/dev/null 2>&1 || return 1
+  secrets=$(config_get secrets.backend prompt)
+  secrets_try_get "$secrets" >/dev/null 2>&1 || return 1
+  if ! _password_seal; then
+    password_cleanup
+    return 1
+  fi
+  if ! transport_prepare_env; then
+    password_cleanup
+    return 1
+  fi
+  count=""
+  OMACLONE_RESTIC_TIMEOUT="${OMACLONE_CONNECT_STATS_TIMEOUT:-8}"
+  count=$(record_clone_count "$loc_id" 2>/dev/null || true)
+  unset OMACLONE_RESTIC_TIMEOUT
+  password_cleanup
+  if declare -F finish_transport >/dev/null 2>&1; then
+    finish_transport
+  else
+    nas_backup_backend_run transport "$backend" post-restic >/dev/null 2>&1 || true
+  fi
+  [[ "$count" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$count"
 }
 
 need_cmd() {
@@ -1128,7 +1223,11 @@ restic_env_exec() {
       eval "$NAS_BACKUP_ENV_EXPORTS"
       set +a
     fi
-    restic --password-file "$NAS_BACKUP_PWFILE" "$@"
+    local -a cmd=(restic)
+    if [[ "${OMACLONE_RESTIC_TIMEOUT:-}" =~ ^[1-9][0-9]*$ ]] && command -v timeout >/dev/null 2>&1; then
+      cmd=(timeout -k 1 "$OMACLONE_RESTIC_TIMEOUT" restic)
+    fi
+    "${cmd[@]}" --password-file "$NAS_BACKUP_PWFILE" "$@"
   )
 }
 

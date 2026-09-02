@@ -236,7 +236,8 @@ cmd_status() {
     snap_count="$lc"
   elif [[ -n "$loc_id" && -f "$NAS_BACKUP_STATE_DIR/repo-stats-${loc_id}.json" ]]; then
     # Remote repos (S3/SFTP) have no local snapshots/ dir. Use the count
-    # written after clone/prune — do not call restic snapshots on status polls.
+    # cached on connect / after clone/prune — do not list the bucket on
+    # status polls.
     local stats_file="$NAS_BACKUP_STATE_DIR/repo-stats-${loc_id}.json"
     snap_count=$(jq -r '.snapshotCount // empty' "$stats_file" 2>/dev/null || true)
     restore_bytes=$(jq -r '.restoreSizeBytes // .repoSizeBytes // 0' "$stats_file" 2>/dev/null || echo 0)
@@ -385,6 +386,7 @@ cmd_location() {
         tui_confirm "Switch active clone location to '$id'?" || die "aborted"
       fi
       location_activate "$id"
+      refresh_clone_count_on_connect "$id" >/dev/null || true
       if (( ! yes )); then
         tui_note "Active location: $id ($(location_get "$id" label)) — $( [[ "$(location_get "$id" schedule)" == on ]] && echo "daily clones on" || echo "manual clones only" )"
       fi
@@ -415,6 +417,28 @@ cmd_location() {
       fi
       location_drop "$id"
       ;;
+    stats)
+      local id
+      id=$(location_active_id)
+      [[ -n "$id" ]] || die "no active location; run: omaclone setup"
+      local n=""
+      n=$(refresh_clone_count_on_connect "$id" 2>/dev/null || true)
+      if [[ "$n" =~ ^[0-9]+$ ]]; then
+        if (( want_json )); then
+          jq -n --argjson snapshotCount "$n" --arg locationId "$id" \
+            '{snapshotCount:$snapshotCount,locationId:$locationId}'
+        else
+          printf '%s\n' "$(clone_count_label "$n")"
+        fi
+        return 0
+      fi
+      if (( want_json )); then
+        jq -n --arg locationId "$id" '{snapshotCount:-1,locationId:$locationId}'
+      else
+        printf '%s\n' "clone count unavailable"
+      fi
+      return 1
+      ;;
     schedule)
       local target="${1:-}" val="${2:-}"
       if [[ "$target" == on || "$target" == off ]]; then
@@ -437,7 +461,7 @@ cmd_location() {
       log "location '$target' automatic clones: $val"
       ;;
     *)
-      die "usage: omaclone location [list|add|switch ID|remove ID|schedule [ID] on|off] [--json] [--yes]"
+      die "usage: omaclone location [list|add|switch ID|remove ID|stats|schedule [ID] on|off] [--json] [--yes]"
       ;;
   esac
 }
@@ -480,6 +504,7 @@ _location_import_discovered() {
   [[ -n "$schedule" ]] || schedule=off
   location_save_current "$id" "$label" "$schedule"
   location_activate "$id"
+  refresh_clone_count_on_connect "$id" >/dev/null || true
 }
 
 cmd_wait_keyring() {

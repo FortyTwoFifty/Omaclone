@@ -109,13 +109,20 @@ _setup_init_repo() {
       looks_wrong=1
     fi
     rm -f "$errfile"
-    password_cleanup
 
     if (( rc == 0 )); then
-      tui_note "Repository already exists at $repo"
+      local n=""
+      n=$(record_clone_count "" 2>/dev/null || true)
+      password_cleanup
+      if [[ "$n" =~ ^[0-9]+$ ]]; then
+        tui_note "Repository already exists at $repo ($(clone_count_label "$n"))"
+      else
+        tui_note "Repository already exists at $repo"
+      fi
       mark_repo_initialized
       return 0
     fi
+    password_cleanup
 
     case "$repo" in
       s3:*|sftp:*) ;;
@@ -150,6 +157,7 @@ _setup_init_repo() {
         set -e
         if (( rc == 0 )); then
           rm -f "$errfile"
+          write_repo_stats 0 0 0 ""
           password_cleanup
           mark_repo_initialized
           return 0
@@ -217,6 +225,21 @@ _setup_register_location() {
   location_save_current "$id" "$label" "$schedule"
   config_set locations.active "$id"
   LOCATION_LAST_ID="$id"
+  _setup_persist_clone_count "$id"
+}
+
+_setup_persist_clone_count() {
+  local id="${1:-}" count restore packed
+  [[ -n "$id" ]] || return 0
+  local global="$NAS_BACKUP_STATE_DIR/repo-stats.json"
+  [[ -f "$global" ]] || return 0
+  count=$(jq -r '.snapshotCount // empty' "$global" 2>/dev/null || true)
+  restore=$(jq -r '.restoreSizeBytes // .repoSizeBytes // 0' "$global" 2>/dev/null || echo 0)
+  packed=$(jq -r '.packedSizeBytes // 0' "$global" 2>/dev/null || echo 0)
+  [[ "$count" =~ ^[0-9]+$ ]] || return 0
+  [[ "$restore" =~ ^[0-9]+$ ]] || restore=0
+  [[ "$packed" =~ ^[0-9]+$ ]] || packed=0
+  write_repo_stats "$count" "$restore" "$packed" "$id"
 }
 
 _setup_accept_defer() {
@@ -450,6 +473,7 @@ cmd_setup() {
           _setup_register_location
         else
           location_save_current "$(location_active_id)"
+          _setup_persist_clone_count "$(location_active_id)"
         fi
         location_destination_edit_end
         location_schedule_apply
@@ -494,6 +518,7 @@ cmd_setup() {
           _setup_register_location
         else
           location_save_current "$(location_active_id)"
+          _setup_persist_clone_count "$(location_active_id)"
         fi
         location_schedule_apply
         return

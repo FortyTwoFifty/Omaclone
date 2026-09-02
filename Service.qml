@@ -48,6 +48,8 @@ Item {
   property bool _statusBusy: false
   property int _failStreak: 0
   property string _switchPrevId: ""
+  property string _cloneCountRefreshId: ""
+  property bool _cloneCountBusy: false
   readonly property bool hasOfflineRemovable: {
     var src = locations || []
     for (var i = 0; i < src.length; i++) {
@@ -250,6 +252,29 @@ Item {
       _wantDiscover = false
       discover()
     }
+    maybeRefreshCloneCount()
+  }
+
+  function retryCloneCount() {
+    _cloneCountRefreshId = ""
+    maybeRefreshCloneCount()
+  }
+
+  function maybeRefreshCloneCount() {
+    if (switching || _cloneCountBusy || cloneCountProc.running) return
+    if (!configured || !connected) return
+    if (transportReady === false && (transport === "s3" || transport === "sftp")) return
+    if (snapshotCount >= 0) {
+      _cloneCountRefreshId = ""
+      return
+    }
+    var id = String(locationId || "")
+    if (!id) return
+    if (_cloneCountRefreshId === id) return
+    _cloneCountRefreshId = id
+    _cloneCountBusy = true
+    cloneCountProc.command = [cliPath, "location", "stats"]
+    cloneCountProc.running = true
   }
 
   function applyDiscover(raw) {
@@ -307,6 +332,7 @@ Item {
     _pendingRefresh = false
     _statusGen += 1
     snapshotCount = -1
+    _cloneCountRefreshId = ""
     repoSizeText = "—"
     repoSizeBytes = 0
     packedSizeText = ""
@@ -408,6 +434,18 @@ Item {
     command: []
     onExited: function(exitCode) {
       root.refresh()
+    }
+  }
+
+  Process {
+    id: cloneCountProc
+    running: false
+    command: []
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      root._cloneCountBusy = false
+      if (!root.switching) root.refresh()
     }
   }
 

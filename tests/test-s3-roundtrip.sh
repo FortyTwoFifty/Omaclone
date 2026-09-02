@@ -188,6 +188,20 @@ n=$(restic --password-file "$pwfile" --repo "$repo" snapshots --json | jq 'lengt
 sid=$(restic --password-file "$pwfile" --repo "$repo" snapshots --json | jq -r '.[0].short_id')
 [[ -n "$sid" && "$sid" != null ]] || fail "could not read snapshot id"
 
+# Connecting to an existing cloud repo must query clone count (not wait for
+# another clone/prune on this machine).
+rm -f "$NAS_BACKUP_STATE_DIR"/repo-stats*.json
+json=$(omaclone_cli status --json)
+snaps=$(printf '%s' "$json" | jq -r '.snapshotCount')
+[[ "$snaps" == "-1" ]] || fail "s3 status without cache should be unknown, got $snaps"
+label=$(omaclone_cli location stats) || fail "location stats against live S3 failed"
+[[ "$label" == *"clone"* ]] || fail "location stats label: $label"
+json=$(omaclone_cli status --json)
+snaps=$(printf '%s' "$json" | jq -r '.snapshotCount')
+[[ "$snaps" -ge 1 ]] || fail "connect query did not cache clone count: $snaps ($json)"
+locn=$(printf '%s' "$json" | jq -r '.locations[] | select(.id=="cloud") | .snapshotCount')
+[[ "$locn" -ge 1 ]] || fail "location list missing queried clone count: $locn ($json)"
+
 omaclone_cli check || fail "omaclone check failed"
 omaclone_cli verify || fail "omaclone verify failed"
 

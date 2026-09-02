@@ -24,6 +24,7 @@ Panel {
     backup.paneOpen = opened
     if (opened) {
       backup.requestDiscover()
+      backup.retryCloneCount()
       cursorActive = false
       focusSection = "actions"
       actionIndex = 0

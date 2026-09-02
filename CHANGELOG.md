@@ -2,6 +2,9 @@
 
 ## 1.5.1
 
+- User timer units use `ProtectSystem=true` instead of `strict`. `strict` remounts `/mnt` and `/run/media` read-only, so daily NAS and USB clones failed. Re-run `omaclone install` to copy the new units.
+- Connecting to a cloud location (setup of an existing repo, location switch, or the bar when the count is still unknown) queries how many clones are there and caches the result. Same for NAS/disk/USB that already have clones. Status polls still do not list the bucket on every refresh.
+- README and kit `RESTORE.md` match 1.5.1: `TRUST` before kit `config.toml`, locators from the recovery card or kit config (not `~/.local/share` on a blank PC), saved locations are never auto-dropped, and timer `/etc` vs package-list sudo is accurate.
 - `config.py` no longer `chmod 700`s `/tmp` (or other system dirs) when the config file lives there.
 - Restore `--delete` uses `--delete-after` and excludes live `restore-staging`. `/etc` extras, pkglists, and user units are read from the restic extract, not leftover local staging. Other Omarchy plugins restore; only `omaclone.plugin` is excluded. User units and linger ask before enabling. `etc.tar` uses tarfile `filter="data"`.
 - `omaclone copy` remaps the dest onto the live mount, refuses to init a repo on `/`, and runs through the same AWS-env helper as clone. SFTP kit copy passes `scp -r --`.
@@ -42,7 +45,7 @@
 - `/etc` restore refuses systemd, pam, polkit, ssh, ssl, and cron even if the allowlist is edited.
 - CIFS UNC is validated; NFS/CIFS/disk mounts use `nosuid,nodev,noexec`. SFTP uses `StrictHostKeyChecking=yes`.
 - First-run pane is a setup door, not a warning shotgun. Widening the keep plan does not prune.
-- Identity clone includes ssh/gpg/browsers; Flatpak Steam is excluded. `omaclone --version` prints `1.5.0`.
+- Identity clone includes ssh/gpg/browsers; Flatpak Steam is excluded. `omaclone --version` prints the `manifest.json` version.
 - CLI split into `cmd-setup.sh` / `cmd-clone.sh` / `cmd-restore.sh` / `cmd-status.sh`. Pane rows live in `ActionRow.qml`, `LocationRadio.qml`, `KeepPlan.qml`.
 - `omaclone verify` (`restic check --read-data-subset=1/10`), `omaclone estimate`, and `omaclone copy [ID]` to another mounted location.
 - First-clone setup shows a size estimate. `OMACLONE_*` env vars are canonical aliases for `NAS_BACKUP_*`.

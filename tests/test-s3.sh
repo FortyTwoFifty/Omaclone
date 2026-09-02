@@ -340,7 +340,14 @@ locn=$(printf '%s' "$json" | jq -r '.locations[] | select(.id=="cloud") | .snaps
 
 python3 "$ROOT/scripts/keyring_store.py" delete s3-access-key
 python3 "$ROOT/scripts/keyring_store.py" delete s3-secret-key
+set +e
+stats_out=$(timeout -k 1 8 "$NAS_BACKUP_ROOT/scripts/omaclone" location stats </dev/null 2>/dev/null)
+stats_rc=$?
+set -e
+(( stats_rc != 0 )) || fail "location stats without keys should fail: $stats_out"
 json=$(omaclone_cli status --json)
+snaps=$(printf '%s' "$json" | jq -r '.snapshotCount')
+[[ "$snaps" == 7 ]] || fail "failed stats must not clear cached clone count: $snaps"
 ready=$(printf '%s' "$json" | jq -r '.transportReady')
 conn=$(printf '%s' "$json" | jq -r '.connected')
 [[ "$ready" == false ]] || fail "status transportReady without keys: $ready"

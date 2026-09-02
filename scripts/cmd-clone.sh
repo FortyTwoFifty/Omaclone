@@ -10,6 +10,7 @@ cmd_init() {
   password_load || return 1
   transport_prepare_env
   restic_exec init
+  write_repo_stats 0 0 0 "$(config_get locations.active 2>/dev/null || true)"
   password_cleanup
   mark_repo_initialized
   finish_transport

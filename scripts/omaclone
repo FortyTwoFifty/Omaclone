@@ -35,6 +35,7 @@ Usage:
   omaclone location switch [ID]  Make a location active
   omaclone location add          Register another NAS / disk / cloud
   omaclone location remove [ID]  Forget a location (does not erase the drive)
+  omaclone location stats        Query clone count on the active location
   omaclone location schedule [ID] [on|off]
                                  Show or set daily clones for a location
   omaclone doctor                Check destination, uid mapping, repo path
