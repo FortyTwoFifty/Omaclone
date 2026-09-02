@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0
+
+- Privileged NFS/disk unit install no longer `sudo cp`s files from a user temp dir. A slurped root helper generates units from validated URI/UUID/mountpoint data, publishes them with exclusive no-follow opens, checks ownership/mode, enables, and rolls back on failure.
+- Extra-disk format binds major:minor, size, by-id, serial, and system-disk ancestry at pick time and revalidates on the privileged side immediately before `mkfs.ext4 -F`.
+- `/etc` restore extracts with a link/device-rejecting implementation on every Python, then a privileged restorer publishes only the closed `fido2` allowlist via held directory fds as root-owned `0644` files (no `cp -a` of user staging).
+- Recovery kit authentication is a project Ed25519 signature of the canonical tree digest (`config/omaclone-kit.sig`), verified with a public key embedded in `./restore` before any other kit code or package install. Missing/unknown signatures fail closed. `SHA256SUMS` is a human checksum list only.
+- `omaclone uninstall` records installed artifacts and removes matching NFS/disk system units (content-hash checked), user units, PATH links, menu keys, and linger.
+- Bar status/discovery helpers cap stdout, schema, locations, and watch paths. Every process tree has a deadline with TERM then KILL.
+- CI declares `permissions: contents: read`, pins `actions/checkout` and the MinIO image to digests, and installs gum from a checksummed GitHub release.
+
 ## 1.5.1
 
 - User timer units use `ProtectSystem=true` instead of `strict`. `strict` remounts `/mnt` and `/run/media` read-only, so daily NAS and USB clones failed. Re-run `omaclone install` to copy the new units.

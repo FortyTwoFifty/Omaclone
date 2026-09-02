@@ -78,7 +78,7 @@ grep -q 'install-disk-mount.sh' "$ROOT/backends/transport/disk" \
 grep -q 'Install a systemd mount' "$ROOT/backends/transport/disk" \
   || fail "systemd extra-disk mount must be opt-in"
 echo "PASS: systemd extra-disk mount is opt-in"
-grep -q 'nosuid,nodev,noexec' "$ROOT/scripts/install-disk-mount.sh" \
+grep -q 'nosuid,nodev,noexec' "$ROOT/scripts/privileged.py" \
   || fail "disk systemd mount should be nosuid,nodev,noexec"
 echo "PASS: disk mount options include nosuid,nodev,noexec"
 
@@ -90,6 +90,8 @@ echo "PASS: bootstrap-install prefers live TARGET"
 
 grep -q 'gum confirm --default=false' "$ROOT/backends/transport/disk" \
   || fail "USB/hotplug setup should default to no fixed mountpoint"
+grep -q 'omaclone_privileged format-disk' "$ROOT/backends/transport/disk" \
+  || fail "format must go through the privileged helper"
 grep -q 'sudo_tty' "$ROOT/backends/transport/disk" \
   || fail "preferred-path mounts should use sudo_tty so gum does not steal the sudo prompt"
 grep -q 'omaclone_validate_mountpoint' "$ROOT/backends/transport/disk" \
@@ -100,7 +102,7 @@ echo "PASS: removable disks default to cold/udisks; mount errors are visible"
 
 grep -q 'uid=$(command id -u),gid=$(command id -g)' "$ROOT/backends/transport/disk" \
   || fail "FAT/exFAT hot mounts should set uid/gid (command id; id() is the backend verb)"
-grep -q 'uid=$(id -u),gid=$(id -g)' "$ROOT/scripts/install-disk-mount.sh" \
+grep -q 'uid={uid},gid={gid}' "$ROOT/scripts/privileged.py" \
   || fail "disk systemd mount should set uid/gid for FAT/exFAT"
 echo "PASS: FAT/exFAT mounts include uid/gid"
 

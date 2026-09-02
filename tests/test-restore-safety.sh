@@ -12,36 +12,27 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 dest=$(mktemp -d)
 python3 "$ROOT/scripts/bootstrap_copy.py" "$ROOT" "$dest" "$NAS_BACKUP_CONFIG"
 [[ -f "$dest/SHA256SUMS" ]] || fail "bootstrap SHA256SUMS missing"
+[[ -f "$dest/omaclone/config/omaclone-kit.sig" ]] || fail "bootstrap signature missing"
 
-# Tampered kit must refuse to exec without UNTRUSTED (no plugin under temp HOME).
-printf '%s\n' "0000000000000000000000000000000000000000000000000000000000000000  scripts/omaclone" >"$dest/SHA256SUMS"
-set +e
-out=$("$dest/restore" --blank-omarchy </dev/null 2>&1)
-rc=$?
-set -e
-(( rc != 0 )) || fail "tampered kit restore should fail: $out"
-printf '%s\n' "$out" | grep -qi "SHA256SUMS\|UNTRUSTED\|changed" \
-  || fail "tampered kit should mention hash: $out"
-
-# Tampered secrets backend must fail even if SHA256SUMS still lists the old trio.
-python3 "$ROOT/scripts/bootstrap_copy.py" "$ROOT" "$dest" "$NAS_BACKUP_CONFIG"
+# Tampered kit must fail closed (no UNTRUSTED prompt).
 printf '%s\n' '#!/bin/bash' 'echo stolen' >"$dest/omaclone/backends/secrets/prompt"
 chmod +x "$dest/omaclone/backends/secrets/prompt"
 set +e
 out=$("$dest/restore" --blank-omarchy </dev/null 2>&1)
 rc=$?
 set -e
-(( rc != 0 )) || fail "tampered prompt backend should fail hash: $out"
-printf '%s\n' "$out" | grep -qi "SHA256SUMS\|UNTRUSTED\|changed" \
-  || fail "tampered backend should mention hash: $out"
+(( rc != 0 )) || fail "tampered prompt backend should fail signature: $out"
+printf '%s\n' "$out" | grep -qi "signature\|unsigned\|changed" \
+  || fail "tampered backend should mention signature: $out"
+printf '%s\n' "$out" | grep -qi 'Type UNTRUSTED' && fail "must fail closed, not UNTRUSTED"
 
-# Good hashes: launcher should get past the hash check (it may fail later on setup).
+# Good signature: launcher should get past auth (it may fail later on setup).
 python3 "$ROOT/scripts/bootstrap_copy.py" "$ROOT" "$dest" "$NAS_BACKUP_CONFIG"
 set +e
 out=$("$dest/restore" --blank-omarchy </dev/null 2>&1)
 rc=$?
 set -e
-printf '%s\n' "$out" | grep -qi "SHA256SUMS\|UNTRUSTED" && fail "good kit should not warn about hash: $out"
+printf '%s\n' "$out" | grep -qi "signature\|UNTRUSTED" && fail "good kit should not warn about signature: $out"
 
 # Kit config must not copy secret-looking keys.
 cat >"$NAS_BACKUP_CONFIG" <<'EOF'
@@ -66,16 +57,17 @@ grep -q '  config/etc-restore.allow$' "$dest/SHA256SUMS" || fail "SHA256SUMS mus
 grep -q '  config/hardware-packages.txt$' "$dest/SHA256SUMS" || fail "SHA256SUMS must list config/hardware-packages.txt"
 grep -q '  config/user-units.deny$' "$dest/SHA256SUMS" || fail "SHA256SUMS must list config/user-units.deny"
 
-# Tamper only the outer launcher; inner SHA256SUMS still matches the plugin tree.
+# Tamper a hashed tree file; signature must fail even if SHA256SUMS is rewritten.
 python3 "$ROOT/scripts/bootstrap_copy.py" "$ROOT" "$dest" "$NAS_BACKUP_CONFIG"
-printf '\n# pwned\n' >>"$dest/restore"
+printf '\n# pwned\n' >>"$dest/omaclone/scripts/omaclone"
+sha256sum "$dest/omaclone/scripts/omaclone" | awk '{print $1"  scripts/omaclone"}' >"$dest/SHA256SUMS.partial"
 set +e
 out=$("$dest/restore" --blank-omarchy </dev/null 2>&1)
 rc=$?
 set -e
-(( rc != 0 )) || fail "tampered outer restore should fail: $out"
-printf '%s\n' "$out" | grep -qi "SHA256SUMS\|UNTRUSTED\|changed" \
-  || fail "tampered outer restore should mention hash: $out"
+(( rc != 0 )) || fail "rewritten checksums must not authenticate a tampered tree: $out"
+printf '%s\n' "$out" | grep -qi "signature\|unsigned\|changed" \
+  || fail "tampered tree should mention signature: $out"
 
 source "$ROOT/scripts/lib.sh"
 source "$ROOT/scripts/cmd-restore.sh"
@@ -112,8 +104,8 @@ printf '%s\n' "$got" | grep -Fx '.ollama' >/dev/null || fail "excludes must keep
 printf '%s\n' "$got" | grep -Fx '.config/omarchy/plugins' >/dev/null && fail "must not exclude all Omarchy plugins"
 printf '%s\n' "$got" | grep -q 'omaclone.plugin' || fail "must exclude omaclone.plugin"
 printf '%s\n' "$got" | grep -q 'restore-staging' || fail "must exclude restore-staging from rsync --delete"
-grep -q 'filter.*data' "$ROOT/scripts/cmd-restore.sh" \
-  || fail "etc tar extract must use tarfile data filter"
+grep -q 'restore-etc' "$ROOT/scripts/cmd-restore.sh" \
+  || fail "etc restore must use the privileged restorer"
 grep -q -- '--delete-after' "$ROOT/scripts/cmd-restore.sh" \
   || fail "restore --delete must use --delete-after"
 

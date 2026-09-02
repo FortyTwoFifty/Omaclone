@@ -53,7 +53,7 @@ Verbs: `id`, `describe`, `available`, `setup`, `mount`, `unmount`, `ready`, `boo
 
 Transport `install` is optional and installs missing CLIs (nfs-utils, cifs-utils, openssh). Notify backends may implement `install` and `setup` the same way.
 
-`bootstrap-install` must copy the tool tree plus `restore`, `SHA256SUMS`, and a **non-secret** `config.toml` onto the share so a blank Omarchy box can run `$mount/omaclone/restore`. Use `scripts/bootstrap_copy.py`. S3 cannot ship a runnable launcher; print a note and exit 0.
+`bootstrap-install` must copy the tool tree plus `restore`, `SHA256SUMS`, `config/omaclone-kit.sig`, and a **non-secret** `config.toml` onto the share so a blank Omarchy box can run `$mount/omaclone/restore`. Use `scripts/bootstrap_copy.py`. S3 cannot ship a runnable launcher; print a note and exit 0.
 
 Shipped transports: `nfs`, `cifs`, `sftp`, `disk`, `s3`, `local`.
 

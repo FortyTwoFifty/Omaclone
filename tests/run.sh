@@ -28,6 +28,8 @@ tests=(
   tests/test-install.sh
   tests/test-setup.sh
   tests/test-restore-safety.sh
+  tests/test-privileged.sh
+  tests/test-kit-auth.sh
   tests/test-password-file.sh
   tests/test-redaction.sh
   tests/test-prep-safety.sh

@@ -220,7 +220,8 @@ Item {
     var locs = parsed.locations
     if (locs && (Array.isArray(locs) || typeof locs.length === "number")) {
       var copy = []
-      for (var i = 0; i < locs.length; i++) copy.push(locs[i])
+      var locCap = Model.MAX_LOCATIONS || 32
+      for (var i = 0; i < locs.length && copy.length < locCap; i++) copy.push(locs[i])
       locations = copy
     } else {
       locations = []
@@ -240,8 +241,9 @@ Item {
     }
     var paths = parsed.watchPaths
     var pc = []
+    var watchCap = Model.MAX_WATCH_PATHS || 8
     if (paths && typeof paths.length === "number") {
-      for (var p = 0; p < paths.length; p++) {
+      for (var p = 0; p < paths.length && pc.length < watchCap; p++) {
         var wp = String(paths[p] || "")
         if (Model.watchPathAllowed(wp)) pc.push(wp)
       }
@@ -273,7 +275,8 @@ Item {
     if (_cloneCountRefreshId === id) return
     _cloneCountRefreshId = id
     _cloneCountBusy = true
-    cloneCountProc.command = [cliPath, "location", "stats"]
+    cloneCountProc.command = _timeoutCmd(30, [cliPath, "location", "stats"])
+    cloneCountKill.restart()
     cloneCountProc.running = true
   }
 
@@ -282,34 +285,42 @@ Item {
       _wantDiscover = true
       return
     }
-    var text = String(raw || "").trim()
-    if (text === "") return
-    var parsed
-    try {
-      parsed = JSON.parse(text)
-    } catch (e) {
-      return
-    }
-    if (!parsed || typeof parsed.length !== "number") return
+    var discovered = Model.parseDiscover(raw)
     var copy = []
     var src = locations || []
     var i
-    for (i = 0; i < src.length; i++) {
+    var locCap = Model.MAX_LOCATIONS || 32
+    for (i = 0; i < src.length && copy.length < locCap; i++) {
       if (src[i] && src[i].source !== "discovered") copy.push(src[i])
     }
-    for (i = 0; i < parsed.length; i++) {
-      var row = parsed[i]
-      if (!row || row.source !== "discovered") continue
-      if (!row.backend) continue
-      copy.push(row)
-    }
+    for (i = 0; i < discovered.length && copy.length < locCap; i++) copy.push(discovered[i])
     locations = copy
     locationEpoch = Model.locationFingerprint(copy)
+  }
+
+  function _timeoutCmd(seconds, argv) {
+    var cmd = ["timeout", "-k", "2", String(seconds)]
+    var i
+    for (i = 0; i < argv.length; i++) cmd.push(argv[i])
+    return cmd
+  }
+
+  function _stopProc(proc) {
+    if (proc && proc.running) proc.running = false
+  }
+
+  function _stopAll() {
+    _stopProc(statusProc)
+    _stopProc(switchProc)
+    _stopProc(discoverProc)
+    _stopProc(ackProc)
+    _stopProc(cloneCountProc)
   }
 
   function discover() {
     if (discoverProc.running) discoverProc.running = false
     discoverProc.command = [discoverPath]
+    discoverKill.restart()
     discoverProc.running = true
   }
 
@@ -360,9 +371,9 @@ Item {
     locationEpoch = Model.locationFingerprint(copy)
     var sid = String(id)
     if (sid.charAt(0) === "-")
-      switchProc.command = [cliPath, "location", "switch", "--yes", "--", sid]
+      switchProc.command = _timeoutCmd(45, [cliPath, "location", "switch", "--yes", "--", sid])
     else
-      switchProc.command = [cliPath, "location", "switch", sid, "--yes"]
+      switchProc.command = _timeoutCmd(45, [cliPath, "location", "switch", sid, "--yes"])
     switchProc.running = true
   }
 
@@ -383,6 +394,7 @@ Item {
       }
       var stdout = String(statusStdout.text || "")
       var stderr = String(statusStderr.text || "")
+      if (stdout.length > (Model.MAX_STATUS_BYTES || 65536)) stdout = ""
       if (stdout.trim() !== "") { root.applyStatus(stdout); root._fsWatchArmed = true; }
       else {
         root._noteStatusFailure("Status helper failed")
@@ -416,7 +428,9 @@ Item {
     command: []
     stdout: StdioCollector { id: discoverStdout; waitForEnd: true }
     onExited: function(exitCode) {
+      discoverKill.stop()
       var stdout = String(discoverStdout.text || "")
+      if (stdout.length > (Model.MAX_STATUS_BYTES || 65536)) return
       if (stdout.trim() !== "") root.applyDiscover(stdout)
     }
   }
@@ -424,7 +438,8 @@ Item {
   function dismissIssue() {
     switchError = ""
     if (ackProc.running) ackProc.running = false
-    ackProc.command = [cliPath, "status", "--ack"]
+    ackProc.command = _timeoutCmd(8, [cliPath, "status", "--ack"])
+    ackKill.restart()
     ackProc.running = true
   }
 
@@ -433,6 +448,7 @@ Item {
     running: false
     command: []
     onExited: function(exitCode) {
+      ackKill.stop()
       root.refresh()
     }
   }
@@ -444,6 +460,7 @@ Item {
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
+      cloneCountKill.stop()
       root._cloneCountBusy = false
       if (!root.switching) root.refresh()
     }
@@ -566,8 +583,52 @@ Item {
         root.severity = "error"
         root.issueTitle = "Status unreadable"
       }
+      reapTimer.restart()
     }
   }
 
+  Timer {
+    id: discoverKill
+    interval: 5000
+    running: false
+    repeat: false
+    onTriggered: {
+      if (discoverProc.running) discoverProc.running = false
+      reapTimer.restart()
+    }
+  }
+
+  Timer {
+    id: ackKill
+    interval: 10000
+    running: false
+    repeat: false
+    onTriggered: {
+      if (ackProc.running) ackProc.running = false
+      reapTimer.restart()
+    }
+  }
+
+  Timer {
+    id: cloneCountKill
+    interval: 32000
+    running: false
+    repeat: false
+    onTriggered: {
+      if (cloneCountProc.running) cloneCountProc.running = false
+      root._cloneCountBusy = false
+      reapTimer.restart()
+    }
+  }
+
+  Timer {
+    id: reapTimer
+    interval: 2000
+    running: false
+    repeat: false
+    onTriggered: root._stopAll()
+  }
+
   Component.onCompleted: root.refresh()
+  Component.onDestruction: root._stopAll()
 }

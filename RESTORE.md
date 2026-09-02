@@ -12,7 +12,7 @@ Plug in Ethernet (or join Wi-Fi) if the clone is on a NAS or in the cloud.
 
 ## 2. Reach the clone
 
-The kit is `$mount/omaclone/` (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`, restic `repo/`). If the volume is mounted at `/mnt/omaclone`, the launcher is `/mnt/omaclone/omaclone/restore`.
+The kit is `$mount/omaclone/` (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`, `config/omaclone-kit.sig`, restic `repo/`). If the volume is mounted at `/mnt/omaclone`, the launcher is `/mnt/omaclone/omaclone/restore`.
 
 On a blank PC, `~/.local/share/omaclone/RECOVERY.md` is not there yet. Use the locator from the printed/saved recovery card, or from `config.toml` on the share/disk once it is mounted (`transport.uri`, `transport.mountpoint`, `transport.uuid`, or the S3 endpoint/bucket).
 
@@ -61,7 +61,7 @@ From a share or disk that has the bootstrap copy:
 /mnt/omaclone/omaclone/restore
 ```
 
-Prefer a plugin install from git. The kit checks `SHA256SUMS`; a mismatch asks you to type `UNTRUSTED`. An interactive kit restore then asks you to type **`TRUST`** before using that copy’s host or bucket in `config.toml`.
+Prefer a plugin install from git. The kit verifies an Ed25519 signature of the tool tree with the public key embedded in `./restore`. A missing or unknown signature stops; it does not offer `UNTRUSTED`. An interactive kit restore then asks you to type **`TRUST`** before using that copy’s host or bucket in `config.toml`.
 
 From the plugin on a blank Omarchy box (cloud, SFTP, or you installed the plugin):
 

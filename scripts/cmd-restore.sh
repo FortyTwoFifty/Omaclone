@@ -138,36 +138,7 @@ _restore_rsync_excludes() {
 
 _restore_extract_etc_tar() {
   local tarfile="$1" dest="$2"
-  python3 - "$tarfile" "$dest" <<'PY'
-import sys, tarfile
-from pathlib import Path
-src, dest = Path(sys.argv[1]), Path(sys.argv[2])
-dest.mkdir(parents=True, exist_ok=True)
-kwargs = {"set_attrs": False}
-if sys.version_info >= (3, 12):
-    kwargs["filter"] = "data"
-errs = (tarfile.ExtractError,)
-for name in ("LinkOutsideDestinationError", "AbsoluteLinkError", "FilterError", "OutsideDestinationError"):
-    err = getattr(tarfile, name, None)
-    if err is not None:
-        errs += (err,)
-with tarfile.open(src, "r:*") as tf:
-    for m in tf.getmembers():
-        name = m.name.replace("\\", "/")
-        if name.startswith("/") or name.startswith("../") or "/../" in name or name.endswith("/.."):
-            continue
-        if not (name == "etc" or name.startswith("etc/")):
-            continue
-        link = (getattr(m, "linkname", None) or "").replace("\\", "/")
-        if link.startswith("/") or link.startswith("../") or "/../" in link:
-            continue
-        try:
-            tf.extract(m, dest, **kwargs)
-        except errs:
-            continue
-        except OSError:
-            continue
-PY
+  python3 "$ROOT/scripts/privileged.py" extract-etc --tar "$tarfile" --dest "$dest"
 }
 
 _restore_snapshot_line() {
@@ -301,54 +272,12 @@ cmd_restore() {
 
   local etc_tar
   if etc_tar=$(staging_file etc.tar "$src"); then
-    local etc_dir="$staging/etc-extract"
-    mkdir -p "$etc_dir"
-    _restore_extract_etc_tar "$etc_tar" "$etc_dir"
-    local allow="$ROOT/config/etc-restore.allow"
     if (( same_machine )) || [[ "$(config_get restore.profile)" == same-machine ]]; then
       log "same-machine: still refusing fstab/Limine/LUKS; applying allowlist only"
     fi
+    omaclone_privileged_load || die "privileged helper missing"
     tui_note "Restoring /etc with sudo — touch your FIDO key if prompted. This is not the Omaclone keyring."
-    while IFS= read -r rel || [[ -n "$rel" ]]; do
-      [[ -z "$rel" || "$rel" == \#* ]] && continue
-      if ! etc_rel_ok "$rel"; then
-        log "skip forbidden /etc path: $rel"
-        continue
-      fi
-      local src="$etc_dir/etc/$rel"
-      if [[ -L "$src" ]]; then
-        log "skip symlink /etc path: $rel"
-        continue
-      fi
-      if [[ -e "$src" ]] && find "$src" -type l -print -quit | grep -q .; then
-        log "skip /etc path containing symlinks: $rel"
-        continue
-      fi
-      if [[ -L "/etc/$rel" ]]; then
-        log "skip existing dest symlink /etc/$rel"
-        continue
-      fi
-      if [[ -e "$src" ]]; then
-        if declare -F sudo_tty >/dev/null; then
-          sudo_tty mkdir -p "/etc/$(dirname "$rel")"
-          if [[ -d "$src" ]]; then
-            sudo_tty mkdir -p "/etc/$rel"
-            sudo_tty cp -a --no-dereference "$src"/. "/etc/$rel"/
-          else
-            sudo_tty cp -a --no-dereference "$src" "/etc/$rel"
-          fi
-        else
-          sudo mkdir -p "/etc/$(dirname "$rel")"
-          if [[ -d "$src" ]]; then
-            sudo mkdir -p "/etc/$rel"
-            sudo cp -a --no-dereference "$src"/. "/etc/$rel"/
-          else
-            sudo cp -a --no-dereference "$src" "/etc/$rel"
-          fi
-        fi
-        log "restored /etc/$rel"
-      fi
-    done <"$allow"
+    omaclone_privileged restore-etc --tar "$etc_tar" || log "no allowlisted /etc files restored"
   fi
 
   _restore_pacman_from_list() {

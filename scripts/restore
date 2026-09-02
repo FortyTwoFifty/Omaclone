@@ -20,39 +20,85 @@ else
   exit 1
 fi
 
-_kit_launcher_ok() {
-  local sums="$here/SHA256SUMS" want got
-  [[ -f "$sums" && -f "$self" ]] || return 1
-  want=$(awk '$2=="scripts/restore"{print $1; exit}' "$sums")
-  [[ -n "$want" ]] || return 1
-  got=$(sha256sum "$self" | awk '{print $1}')
-  [[ "$got" == "$want" ]]
+# Project Ed25519 public key (config/omaclone-kit.pub). Not taken from the kit.
+_KIT_PUBKEY_PEM='-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAxmJomSkS0fDbZLxJA6YNjedgar61rjmWrZJJD3icr0k=
+-----END PUBLIC KEY-----
+'
+
+_kit_is_copy() {
+  [[ -f "$here/SHA256SUMS" || -f "$here/.omaclone-bootstrap" || -f "$here/omaclone/config/omaclone-kit.sig" ]]
 }
 
-_kit_hash_ok() {
-  local sums="$here/SHA256SUMS"
-  [[ -f "$sums" ]] || return 1
-  python3 "$ROOT/scripts/bootstrap_copy.py" --verify "$sums" "$ROOT"
+# Verify the kit tree with the embedded public key before any other kit code runs.
+_kit_signature_ok() {
+  local payload="$1"
+  python3 - "$payload" "$_KIT_PUBKEY_PEM" <<'PY'
+import hashlib, os, subprocess, sys, tempfile
+from pathlib import Path
+
+root = Path(sys.argv[1])
+pub = sys.argv[2]
+skip = {"omaclone-kit.sig", "TREE.sig"}
+namespace = b"omaclone-kit-v1\n"
+digest = hashlib.sha256()
+digest.update(namespace)
+rels = []
+for base in ("scripts", "backends", "config"):
+    directory = root / base
+    if not directory.is_dir():
+        continue
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
+        if path.name in skip:
+            continue
+        rels.append(path.relative_to(root).as_posix())
+for rel in rels:
+    data = (root / rel).read_bytes()
+    digest.update(rel.encode("utf-8") + b"\0" + data + b"\0")
+want = digest.hexdigest().encode("ascii")
+sig_path = root / "config" / "omaclone-kit.sig"
+if not sig_path.is_file():
+    raise SystemExit(1)
+sig = sig_path.read_bytes()
+if not (32 <= len(sig) <= 256):
+    raise SystemExit(1)
+digest_tmp = sig_tmp = pub_tmp = None
+try:
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(want)
+        digest_tmp = tmp.name
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(sig)
+        sig_tmp = tmp.name
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp:
+        tmp.write(pub if pub.endswith("\n") else pub + "\n")
+        pub_tmp = tmp.name
+    proc = subprocess.run(
+        ["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", pub_tmp, "-rawin", "-in", digest_tmp, "-sigfile", sig_tmp],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    raise SystemExit(0 if proc.returncode == 0 else 1)
+finally:
+    for p in (digest_tmp, sig_tmp, pub_tmp):
+        if p:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+PY
 }
 
-_kit_untrusted() {
-  echo "omaclone: kit scripts do not match SHA256SUMS (the USB/NAS copy may have been changed)." >&2
-  if [[ -t 0 ]]; then
-    printf 'Type UNTRUSTED to run this copy anyway: '
-    read -r phrase
-    [[ "$phrase" == UNTRUSTED ]] || exit 1
-  else
-    echo "Set OMACLONE_ALLOW_UNTRUSTED_KIT=1 to override, or install the plugin from git." >&2
+if _kit_is_copy && [[ "${OMACLONE_ALLOW_UNTRUSTED_KIT:-}" != 1 ]]; then
+  payload="$ROOT"
+  [[ -d "$here/omaclone/scripts" ]] && payload="$here/omaclone"
+  if ! _kit_signature_ok "$payload"; then
+    echo "omaclone: kit is missing a valid project signature (the USB/NAS copy may have been changed)." >&2
+    echo "Install from git: omarchy plugin add https://github.com/FortyTwoFifty/Omaclone.git --enable" >&2
+    echo "Set OMACLONE_ALLOW_UNTRUSTED_KIT=1 only if you accept running unsigned kit code." >&2
     exit 1
-  fi
-}
-
-if [[ "${OMACLONE_ALLOW_UNTRUSTED_KIT:-}" != 1 ]]; then
-  if ! _kit_launcher_ok; then
-    _kit_untrusted
-  fi
-  if [[ "$ROOT" != "$plugin" ]] && ! _kit_hash_ok; then
-    _kit_untrusted
   fi
 fi
 

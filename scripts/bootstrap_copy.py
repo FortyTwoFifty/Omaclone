@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import shutil
 import stat
 import sys
 from pathlib import Path
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+import kit_auth  # noqa: E402
 
 SKIP_DIRS = {".git", "__pycache__", "tests"}
 SECRET_KEY_RE = re.compile(r"(password|secret|token|credential|access.?key|secret.?key)", re.I)
@@ -64,61 +68,10 @@ def plugin_version(root: Path) -> str:
     return ""
 
 
-def iter_hash_rels(root: Path) -> list[str]:
-    rels: list[str] = []
-    for base in ("scripts", "backends", "config"):
-        directory = root / base
-        if not directory.is_dir():
-            continue
-        for path in sorted(directory.rglob("*")):
-            if not path.is_file():
-                continue
-            if "__pycache__" in path.parts or path.suffix == ".pyc":
-                continue
-            rels.append(path.relative_to(root).as_posix())
-    return rels
-
-
-def tree_digest(root: Path) -> str:
-    digest = hashlib.sha256()
-    for rel in iter_hash_rels(root):
-        data = (root / rel).read_bytes()
-        digest.update(rel.encode("utf-8") + b"\0" + data + b"\0")
-    return digest.hexdigest()
-
-
-def sha256sums_text(root: Path) -> str:
-    lines = []
-    for rel in iter_hash_rels(root):
-        path = root / rel
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        lines.append(f"{digest}  {rel}")
-    return "\n".join(lines) + ("\n" if lines else "")
-
-
-def verify_sums(sums: Path, root: Path) -> bool:
-    expected = set(iter_hash_rels(root))
-    listed: dict[str, str] = {}
-    if not sums.is_file():
-        return False
-    for line in sums.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        listed[parts[-1]] = parts[0]
-    if set(listed) != expected:
-        return False
-    for rel, want in listed.items():
-        path = root / rel
-        if not path.is_file():
-            return False
-        got = hashlib.sha256(path.read_bytes()).hexdigest()
-        if got != want:
-            return False
-    return True
+iter_hash_rels = kit_auth.iter_hash_rels
+tree_digest = kit_auth.tree_digest
+sha256sums_text = kit_auth.sha256sums_text
+verify_sums = kit_auth.verify_sums
 
 
 def _unquote(raw: str) -> str:
@@ -240,8 +193,11 @@ def main(argv: list[str]) -> int:
     if marker.is_file() and version and marker.read_text(encoding="utf-8").strip() == f"omaclone {version}":
         kit_root = dest / "omaclone"
         sums = dest / "SHA256SUMS"
-        skip_tree = kit_root.is_dir() and (kit_root / "scripts" / "omaclone").is_file() and verify_sums(
-            sums, kit_root
+        skip_tree = (
+            kit_root.is_dir()
+            and (kit_root / "scripts" / "omaclone").is_file()
+            and verify_sums(sums, kit_root)
+            and kit_auth.verify_tree(kit_root)
         )
     copy_tree(root, dest / "omaclone", skip_tree=skip_tree)
     restore_src = root / "scripts" / "restore"
@@ -254,6 +210,16 @@ def main(argv: list[str]) -> int:
     if readme.is_file():
         shutil.copy2(readme, dest / "RESTORE.md")
     (dest / "SHA256SUMS").write_text(sha256sums_text(root), encoding="utf-8")
+    sig_src = root / kit_auth.SIG_REL
+    sig_dst = dest / "omaclone" / kit_auth.SIG_REL
+    if sig_src.is_file() and sig_src.resolve() != sig_dst.resolve():
+        sig_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(sig_src, sig_dst)
+    if not kit_auth.verify_tree(dest / "omaclone"):
+        print(
+            "omaclone: kit tree is not signed with the project key; restore will refuse it",
+            file=sys.stderr,
+        )
     marker.write_text(f"omaclone {version}\n", encoding="utf-8")
     print(f"bootstrap installed at {dest}", file=sys.stderr)
     return 0

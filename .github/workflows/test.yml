@@ -4,20 +4,30 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y restic jq python3 rsync nodejs curl ca-certificates gnupg shellcheck nfs-common cifs-utils
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
-          echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list
-          sudo apt-get update
-          sudo apt-get install -y gum
+          sudo apt-get install -y restic jq python3 rsync nodejs curl ca-certificates openssl shellcheck nfs-common cifs-utils
+          GUM_VER=2.0.0
+          GUM_SHA256=c99b0005bb5b514770eea404b24c7987e08eba35bb0b2d7bc6545bb676c36861
+          curl -fsSL -o /tmp/gum.tgz \
+            "https://github.com/charmbracelet/gum/releases/download/v${GUM_VER}/gum_${GUM_VER}_Linux_x86_64.tar.gz"
+          echo "${GUM_SHA256}  /tmp/gum.tgz" | sha256sum -c -
+          mkdir -p /tmp/gum-extract
+          tar -xzf /tmp/gum.tgz -C /tmp/gum-extract
+          sudo install -m 0755 /tmp/gum-extract/*/gum /usr/local/bin/gum
       - name: Compile Python
         run: python3 -m py_compile scripts/*.py
       - name: Shellcheck (errors only)
@@ -25,7 +35,7 @@ jobs:
           shellcheck --severity=error scripts/omaclone scripts/cmd-*.sh scripts/lib.sh scripts/restore \
             scripts/deps.sh scripts/backend.sh scripts/tui.sh scripts/nfs-lib.sh scripts/transport-lib.sh \
             scripts/locations.sh scripts/install-disk-mount.sh scripts/install-nfs-mount.sh \
-            scripts/prep.sh scripts/status.sh scripts/launch-tui.sh \
+            scripts/prep.sh scripts/status.sh scripts/launch-tui.sh scripts/discover-status.sh \
             backends/secrets/* backends/transport/* backends/notify/*
       - name: Plugin validate (when omarchy is installed)
         run: |
@@ -35,8 +45,9 @@ jobs:
             echo "SKIP omarchy plugin validate (omarchy not on PATH in this runner)"
           fi
       - name: Pull MinIO
-        run: docker pull minio/minio:latest
+        run: docker pull minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
       - name: Run tests
         env:
           OMACLONE_REQUIRE_S3: "1"
+          OMACLONE_MINIO_IMAGE: "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
         run: ./tests/run.sh

@@ -31,7 +31,7 @@ def lsblk() -> dict:
             "-J",
             "-b",
             "-o",
-            "NAME,PATH,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,TRAN,HOTPLUG,LABEL,MODEL,PKNAME,PARTTYPE",
+            "NAME,PATH,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,TRAN,HOTPLUG,LABEL,MODEL,PKNAME,PARTTYPE,MAJ:MIN,SERIAL,WWN",
         ],
         text=True,
     )
@@ -129,9 +129,35 @@ def is_removable(row: dict) -> bool:
     return tran == "usb" or _truthy(row.get("hotplug"))
 
 
+def by_id_for(path: str) -> str:
+    want = os.path.realpath(path) if path else ""
+    base = "/dev/disk/by-id"
+    if not want or not os.path.isdir(base):
+        return ""
+    matches: list[str] = []
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return ""
+    for name in names:
+        candidate = os.path.join(base, name)
+        try:
+            if os.path.realpath(candidate) == want:
+                matches.append(candidate)
+        except OSError:
+            continue
+    if not matches:
+        return ""
+    preferred = [p for p in matches if "/wwn-" in p or os.path.basename(p).startswith("wwn-")]
+    if not preferred:
+        preferred = [p for p in matches if not os.path.basename(p).startswith("lvm-") and "lvm-pv-uuid" not in os.path.basename(p)]
+    return sorted(preferred or matches)[0]
+
+
 def to_rec(row: dict) -> dict:
     name = row.get("name") or ""
     path = row.get("path") or f"/dev/{name}"
+    majmin = str(row.get("maj:min") or row.get("maj_min") or "")
     return {
         "name": name,
         "path": path,
@@ -145,6 +171,11 @@ def to_rec(row: dict) -> dict:
         "hotplug": _truthy(row.get("hotplug")),
         "label": row.get("label") or "",
         "model": row.get("model") or "",
+        "pkname": str(row.get("pkname") or ""),
+        "majmin": majmin,
+        "serial": str(row.get("serial") or ""),
+        "wwn": str(row.get("wwn") or ""),
+        "by_id": by_id_for(path),
     }
 
 
@@ -191,8 +222,6 @@ def iter_candidates(
     large = [rec for rec in kept if rec["bytes"] >= MIN_CANDIDATE_BYTES]
     chosen = large if large else kept
     chosen.sort(key=sort_key)
-    for rec in chosen:
-        rec.pop("bytes", None)
     return chosen
 
 

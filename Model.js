@@ -1,3 +1,15 @@
+var MAX_STATUS_BYTES = 65536
+var MAX_STRING = 512
+var MAX_LOCATIONS = 32
+var MAX_WATCH_PATHS = 8
+
+function clampString(value, max) {
+  var text = String(value == null ? "" : value)
+  if (max === undefined) max = MAX_STRING
+  if (text.length > max) return text.substring(0, max)
+  return text
+}
+
 function defaultStatus() {
   return {
     ok: false,
@@ -31,17 +43,71 @@ function defaultStatus() {
   }
 }
 
+function parseLocationRow(row) {
+  if (!row || typeof row !== "object") return null
+  var backend = clampString(row.backend, 32)
+  if (!backend) return null
+  return {
+    id: clampString(row.id, 128),
+    label: clampString(row.label, MAX_STRING),
+    backend: backend,
+    uuid: clampString(row.uuid, 64),
+    source: clampString(row.source, 32),
+    mode: clampString(row.mode, 16),
+    schedule: clampString(row.schedule, 16),
+    connected: row.connected === true,
+    active: row.active === true,
+    snapshotCount: row.snapshotCount,
+    preset: clampString(row.preset, 32),
+    config: clampString(row.config, 512)
+  }
+}
+
 function parseStatus(raw) {
-  var text = String(raw || "").trim()
+  var text = String(raw || "")
+  if (text.length > MAX_STATUS_BYTES) {
+    var oversized = defaultStatus()
+    oversized.lastError = "Failed to parse backup status"
+    oversized.severity = "error"
+    oversized.issueTitle = "Status unreadable"
+    return oversized
+  }
+  text = text.trim()
   if (text === "") return defaultStatus()
   try {
     var parsed = JSON.parse(text)
     if (!parsed || typeof parsed !== "object") return defaultStatus()
     var base = defaultStatus()
-    for (var key in base) {
-      if (Object.prototype.hasOwnProperty.call(parsed, key))
-        base[key] = parsed[key]
+    var key
+    for (key in base) {
+      if (!Object.prototype.hasOwnProperty.call(parsed, key)) continue
+      if (key === "locations" || key === "watchPaths") continue
+      if (typeof base[key] === "string") base[key] = clampString(parsed[key])
+      else if (typeof base[key] === "boolean") base[key] = parsed[key] === true
+      else if (typeof base[key] === "number") {
+        var n = parseInt(String(parsed[key]), 10)
+        base[key] = isFinite(n) ? n : base[key]
+      } else base[key] = parsed[key]
     }
+    var locs = parsed.locations
+    var copy = []
+    if (locs && typeof locs.length === "number") {
+      for (var i = 0; i < locs.length && copy.length < MAX_LOCATIONS; i++) {
+        var loc = parseLocationRow(locs[i])
+        if (loc) copy.push(loc)
+      }
+    }
+    base.locations = copy
+    var paths = parsed.watchPaths
+    var pc = []
+    if (paths && typeof paths.length === "number") {
+      for (var p = 0; p < paths.length && pc.length < MAX_WATCH_PATHS; p++) {
+        var wp = clampString(paths[p], 128)
+        if (watchPathAllowed(wp)) pc.push(wp)
+      }
+    }
+    base.watchPaths = pc
+    if (!watchPathAllowed(base.watchPath)) base.watchPath = ""
     return base
   } catch (e) {
     var failed = defaultStatus()
@@ -50,6 +116,26 @@ function parseStatus(raw) {
     failed.issueTitle = "Status unreadable"
     return failed
   }
+}
+
+function parseDiscover(raw) {
+  var text = String(raw || "")
+  if (text.length > MAX_STATUS_BYTES) return []
+  text = text.trim()
+  if (text === "") return []
+  var parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (e) {
+    return []
+  }
+  if (!parsed || typeof parsed.length !== "number") return []
+  var copy = []
+  for (var i = 0; i < parsed.length && copy.length < MAX_LOCATIONS; i++) {
+    var row = parseLocationRow(parsed[i])
+    if (row && row.source === "discovered") copy.push(row)
+  }
+  return copy
 }
 
 function shouldApplyStatus(switching, targetId, parsed) {
@@ -61,7 +147,9 @@ function shouldApplyStatus(switching, targetId, parsed) {
 }
 
 function watchPathAllowed(p) {
-  return /^\/dev\/disk\/by-uuid\/[0-9A-Fa-f-]+$/.test(String(p || ""))
+  var s = String(p || "")
+  if (s.length > 128) return false
+  return /^\/dev\/disk\/by-uuid\/[0-9A-Fa-f-]+$/.test(s)
 }
 
 function watchPathsEqual(a, b) {

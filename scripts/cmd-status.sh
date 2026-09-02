@@ -289,7 +289,22 @@ cmd_status() {
       --arg issueTitle "$issueTitle" \
       --arg issueKind "$issueKind" \
       --argjson issueAcked "$acked" \
-      '{ok:$ok,configured:$configured,transportReady:$transportReady,repo:$repo,transport:$transport,secrets:$secrets,lastStatus:$lastStatus,lastError:$lastError,lastBackupUnix:$lastBackupUnix,statusText:$statusText,snapshotCount:$snapshotCount,repoSizeBytes:$repoSizeBytes,repoSizeText:$repoSizeText,packedSizeBytes:$packedSizeBytes,packedSizeText:$packedSizeText,retentionPreset:$retentionPreset,retentionLabel:$retentionLabel,locationId:$locationId,locationLabel:$locationLabel,locationSchedule:$locationSchedule,locations:$locations,setupComplete:$setupComplete,connected:$connected,watchPath:$watchPath,watchPaths:$watchPaths,severity:$severity,issueTitle:$issueTitle,issueKind:$issueKind,issueAcked:$issueAcked}'
+      '{ok:$ok,configured:$configured,transportReady:$transportReady,repo:$repo,transport:$transport,secrets:$secrets,lastStatus:$lastStatus,lastError:$lastError,lastBackupUnix:$lastBackupUnix,statusText:$statusText,snapshotCount:$snapshotCount,repoSizeBytes:$repoSizeBytes,repoSizeText:$repoSizeText,packedSizeBytes:$packedSizeBytes,packedSizeText:$packedSizeText,retentionPreset:$retentionPreset,retentionLabel:$retentionLabel,locationId:$locationId,locationLabel:$locationLabel,locationSchedule:$locationSchedule,locations:$locations,setupComplete:$setupComplete,connected:$connected,watchPath:$watchPath,watchPaths:$watchPaths,severity:$severity,issueTitle:$issueTitle,issueKind:$issueKind,issueAcked:$issueAcked}' \
+      | jq -c '
+        def clip: if type == "string" and length > 512 then .[0:512] else . end;
+        def clip_loc:
+          if type != "object" then empty else
+            .id |= clip | .label |= clip | .backend |= clip | .uuid |= clip |
+            .source |= clip | .mode |= clip | .schedule |= clip
+          end;
+        .repo |= clip | .transport |= clip | .secrets |= clip | .lastStatus |= clip |
+        .lastError |= clip | .statusText |= clip | .repoSizeText |= clip |
+        .packedSizeText |= clip | .retentionPreset |= clip | .retentionLabel |= clip |
+        .locationId |= clip | .locationLabel |= clip | .locationSchedule |= clip |
+        .watchPath |= clip | .severity |= clip | .issueTitle |= clip | .issueKind |= clip |
+        .locations |= (if type == "array" then .[:32] | map(clip_loc) else [] end) |
+        .watchPaths |= (if type == "array" then .[:8] | map(clip) else [] end)
+      '
   else
     local setup_text="complete"
     [[ "$setupComplete" == false ]] && setup_text="unfinished"
@@ -320,6 +335,7 @@ cmd_location() {
     list|"")
       local json
       json=$(location_list_json)
+      json=$(printf '%s\n' "$json" | jq -c 'if type == "array" then .[:32] else [] end')
       if (( want_json )) || [[ "${1:-}" == --json ]]; then
         printf '%s\n' "$json"
         return 0
@@ -526,6 +542,44 @@ cmd_wait_keyring() {
   exit 0
 }
 
+_install_artifacts_path() {
+  printf '%s\n' "$NAS_BACKUP_STATE_DIR/installed-artifacts.json"
+}
+
+_install_artifacts_write() {
+  python3 - "$(_install_artifacts_path)" "$NAS_BACKUP_ROOT" "$HOME" "$PLUGIN_ID" "${1:-0}" <<'PY'
+import json, os, sys
+from pathlib import Path
+dest, root, home, plugin_id, linger = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] == "1"
+root = os.path.realpath(root)
+cli = os.path.realpath(os.path.join(root, "scripts", "omaclone"))
+plugin = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(home, ".config")), "omarchy", "plugins", plugin_id)
+data = {
+    "root": root,
+    "cli": [
+        os.path.join(home, ".local", "bin", "omaclone"),
+        os.path.join(home, ".local", "bin", "omarchy-backup"),
+        os.path.join(home, ".local", "bin", "nas-backup"),
+    ],
+    "cli_target": cli,
+    "plugin": plugin,
+    "user_units": [
+        "omaclone.service",
+        "omaclone.timer",
+        "omaclone-prune.service",
+        "omaclone-prune.timer",
+        "omaclone-keyring-retry.service",
+    ],
+    "menu": True,
+    "linger": linger,
+}
+dest.parent.mkdir(parents=True, exist_ok=True)
+tmp = dest.with_name(".installed-artifacts.json.tmp")
+tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+os.replace(tmp, dest)
+PY
+}
+
 cmd_install() {
   mkdir -p "$HOME/.local/bin" "$HOME/.config/omarchy/plugins"
   omaclone_link_cli
@@ -547,6 +601,7 @@ cmd_install() {
     location_schedule_apply
     loginctl enable-linger "$USER" 2>/dev/null || true
     config_set install.linger 1
+    _install_artifacts_write 1
 
     if have omarchy; then
       omarchy plugin enable "$PLUGIN_ID" --section right --after omarchy.tray 2>/dev/null || \
@@ -562,6 +617,9 @@ cmd_install() {
     nfs_upgrade_existing_units "$(config_get transport.uri)" "$(config_get transport.mountpoint)" || true
     nfs_remount_hardening "$(config_get transport.mountpoint)"
   fi
+  if [[ "${OMACLONE_SKIP_SYSTEMD:-}" == 1 || "$(config_get install.linger)" != 1 ]]; then
+    _install_artifacts_write 0
+  fi
   log "installed: ~/.local/bin/omaclone and plugin $PLUGIN_ID"
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
@@ -570,17 +628,31 @@ cmd_install() {
 }
 
 cmd_uninstall() {
+  local artifacts="$NAS_BACKUP_STATE_DIR/installed-artifacts.json"
   if [[ "${OMACLONE_SKIP_SYSTEMD:-}" != 1 ]]; then
     if have omarchy; then
       omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || \
         omarchy-shell shell setPluginEnabled "$PLUGIN_ID" false >/dev/null 2>&1 || true
     fi
     local unit_dir="$HOME/.config/systemd/user"
-    systemctl --user disable --now omaclone.timer omaclone-prune.timer \
-      omaclone.service omaclone-prune.service omaclone-keyring-retry.service 2>/dev/null || true
-    rm -f "$unit_dir/omaclone.service" "$unit_dir/omaclone.timer" \
-      "$unit_dir/omaclone-prune.service" "$unit_dir/omaclone-prune.timer" \
-      "$unit_dir/omaclone-keyring-retry.service"
+    local units=(omaclone.timer omaclone-prune.timer omaclone.service omaclone-prune.service omaclone-keyring-retry.service)
+    if [[ -f "$artifacts" ]]; then
+      mapfile -t units < <(python3 - "$artifacts" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+for u in d.get("user_units") or []:
+    print(u)
+PY
+)
+    fi
+    if ((${#units[@]})); then
+      systemctl --user disable --now "${units[@]}" 2>/dev/null || true
+      local unit
+      for unit in "${units[@]}"; do
+        [[ "$unit" == omaclone*.service || "$unit" == omaclone*.timer ]] || continue
+        rm -f "$unit_dir/$unit"
+      done
+    fi
     systemctl --user daemon-reload 2>/dev/null || true
     if [[ "$(config_get install.linger)" == 1 ]]; then
       loginctl disable-linger "$USER" 2>/dev/null || true
@@ -592,13 +664,20 @@ cmd_uninstall() {
     else
       log "lingering login was not disabled; to disable: loginctl disable-linger $USER"
     fi
+    if declare -F omaclone_privileged >/dev/null; then
+      omaclone_privileged_load 2>/dev/null || true
+      if [[ -n "${_OMACLONE_PRIVILEGED_B64:-}" ]]; then
+        printf '%s\n' "sudo — removing NFS/disk system units if this install created them." >&2
+        omaclone_privileged uninstall || log "no matching system mount units removed"
+      fi
+    fi
   fi
   omaclone_unlink_cli
   omaclone_unlink_plugin
   omaclone_uninstall_menu
-  log "removed PATH command, timers, plugin symlink, and Super+Space menu entries"
+  rm -f "$artifacts"
+  log "removed PATH command, timers, plugin symlink, Super+Space menu entries, and system mount units that belonged to this install"
   log "config (~/.config/omaclone) and clones were not deleted"
-  log "NFS/disk systemd mounts in /etc/systemd/system were not removed (needs sudo)"
   log "if the bar widget is still a git clone: omarchy plugin remove $PLUGIN_ID"
 }
 

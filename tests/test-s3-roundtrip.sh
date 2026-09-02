@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/tests/helpers.sh"
 export NAS_BACKUP_ROOT="$ROOT"
 
-MINIO_IMAGE="${OMACLONE_MINIO_IMAGE:-minio/minio:latest}"
+MINIO_IMAGE="${OMACLONE_MINIO_IMAGE:-minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e}"
 
 skip_or_fail() {
   local msg="$1"

@@ -43,4 +43,13 @@ python3 -m py_compile "$ROOT"/scripts/*.py "$ROOT"/tests/s3_create_bucket.py || 
 [[ -f "$ROOT/ActionRow.qml" && -f "$ROOT/LocationRadio.qml" && -f "$ROOT/KeepPlan.qml" ]] \
   || fail "pane components missing"
 
+wf="$ROOT/.github/workflows/test.yml"
+grep -q '^permissions:' "$wf" || fail "CI must declare top-level permissions"
+grep -q 'contents: read' "$wf" || fail "CI must use contents: read"
+grep -q 'actions/checkout@[0-9a-f]\{40\}' "$wf" || fail "CI must pin actions/checkout to a commit digest"
+grep -q 'minio/minio@sha256:' "$wf" || fail "CI must pin the MinIO image digest"
+grep -q 'sha256sum -c' "$wf" || fail "CI must verify gum checksums"
+grep -q 'minio/minio:latest' "$wf" && fail "CI must not pull minio/minio:latest"
+grep -q 'actions/checkout@v4' "$wf" && fail "CI must not use a floating checkout tag"
+
 echo OK

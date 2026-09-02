@@ -6,7 +6,7 @@ const assert = require("assert");
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8");
 const ctx = { console };
 vm.createContext(ctx);
-vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, shouldApplyStatus, watchPathAllowed, watchPathsEqual, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectionLabel, connectedLabels, locationCloneText, retentionPresets, retentionLabel, retentionShort, retentionRank, retentionTighter };", ctx);
+vm.runInContext(src + "\nthis.Model = { defaultStatus, parseStatus, parseDiscover, shouldApplyStatus, watchPathAllowed, watchPathsEqual, installedLocations, activeLocation, storageKind, storageDisplay, storageHint, paneLocations, locationById, locationFingerprint, connectionLabel, connectedLabels, locationCloneText, retentionPresets, retentionLabel, retentionShort, retentionRank, retentionTighter, MAX_STATUS_BYTES, MAX_STRING, MAX_LOCATIONS, MAX_WATCH_PATHS };", ctx);
 const M = ctx.Model;
 
 function fixture(overrides) {
@@ -170,5 +170,24 @@ assert.strictEqual(M.retentionLabel("nope"), "7 days / 4 weeks / 6 months / 2 ye
 assert.strictEqual(M.retentionShort("last-5"), "5");
 assert.strictEqual(M.retentionShort("week"), "7d");
 assert.strictEqual(M.retentionShort("standard"), "1y+");
+
+assert.strictEqual(M.MAX_LOCATIONS, 32);
+assert.strictEqual(M.MAX_WATCH_PATHS, 8);
+const huge = "x".repeat((M.MAX_STATUS_BYTES || 65536) + 8);
+const tooBig = M.parseStatus(huge);
+assert.strictEqual(tooBig.lastError, "Failed to parse backup status");
+const manyWatch = fixture({
+  watchPath: "/dev/disk/by-uuid/AAAA-1111",
+  watchPaths: Array.from({ length: 20 }, (_, i) => "/dev/disk/by-uuid/AAAA-" + String(1000 + i))
+});
+const clipped = M.parseStatus(JSON.stringify(manyWatch));
+assert.ok(clipped.watchPaths.length <= M.MAX_WATCH_PATHS);
+assert.strictEqual(M.parseDiscover("not json").length, 0);
+const discovered = M.parseDiscover(JSON.stringify([
+  { id: "d1", backend: "disk", source: "discovered", label: "Stick" },
+  { id: "cfg", backend: "nfs", source: "config", label: "NAS" }
+]));
+assert.strictEqual(discovered.length, 1);
+assert.strictEqual(discovered[0].id, "d1");
 
 console.log("OK");

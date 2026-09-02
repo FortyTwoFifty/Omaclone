@@ -246,6 +246,26 @@ sudo_tty() {
   fi
 }
 
+# Slurp privileged.py before any sudo delay so the pathname cannot be swapped.
+omaclone_privileged_load() {
+  local helper
+  if [[ -n "${_OMACLONE_PRIVILEGED_B64:-}" ]]; then
+    return 0
+  fi
+  helper="$NAS_BACKUP_ROOT/scripts/privileged.py"
+  [[ -f "$helper" ]] || { echo "omaclone: missing privileged helper" >&2; return 1; }
+  if base64 -w0 "$helper" >/dev/null 2>&1; then
+    _OMACLONE_PRIVILEGED_B64=$(base64 -w0 "$helper")
+  else
+    _OMACLONE_PRIVILEGED_B64=$(base64 "$helper" | tr -d '\n')
+  fi
+}
+
+omaclone_privileged() {
+  omaclone_privileged_load || return 1
+  sudo_tty python3 -c "import base64; exec(base64.standard_b64decode('${_OMACLONE_PRIVILEGED_B64}'), {'__name__':'__main__'})" -- "$@"
+}
+
 config_py() {
   python3 "$NAS_BACKUP_ROOT/scripts/config.py" "$@"
 }

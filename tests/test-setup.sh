@@ -156,7 +156,7 @@ est=$(clone_estimate_text)
 [[ -n "$est" ]] || fail "clone_estimate_text empty"
 
 ver=$("$ROOT/scripts/omaclone" --version)
-[[ "$ver" == "1.5.1" ]] || fail "omaclone --version expected 1.5.1, got $ver"
+[[ "$ver" == "1.6.0" ]] || fail "omaclone --version expected 1.6.0, got $ver"
 
 card=$(write_recovery_card)
 grep -q "plugin add" "$card" || fail "s3 recovery card should use plugin add"

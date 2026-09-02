@@ -60,36 +60,20 @@ nfs_remount_hardening() {
 
 nfs_write_unit_files() {
   local uri="$1" mountpoint="$2" dest="$3"
+  local text mount auto
   nfs_unit_names "$mountpoint"
-  cat >"$dest/$NFS_MOUNT_UNIT" <<EOF
-[Unit]
-Description=Omaclone NFS share
-After=network-online.target
-Wants=network-online.target
-
-[Mount]
-What=$uri
-Where=$mountpoint
-Type=$(nfs_fstype)
-Options=$(nfs_mount_options)
-EOF
-  cat >"$dest/$NFS_AUTO_UNIT" <<EOF
-[Unit]
-Description=Automount Omaclone NFS share
-
-[Automount]
-Where=$mountpoint
-TimeoutIdleSec=600
-
-[Install]
-WantedBy=multi-user.target
-EOF
+  text=$(python3 "${NAS_BACKUP_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/..}/scripts/privileged.py" \
+    print-nfs-unit --uri "$uri" --mountpoint "$mountpoint") || return 1
+  mount="${text%%---$'\n'*}"
+  auto="${text#*$'\n'---$'\n'}"
+  printf '%s' "$mount" >"$dest/$NFS_MOUNT_UNIT"
+  printf '%s' "$auto" >"$dest/$NFS_AUTO_UNIT"
 }
 
 nfs_upgrade_existing_units() {
   local uri="${1:-}" mountpoint="${2:-}"
   local unit_dir="${3:-/etc/systemd/system}"
-  local have want tmp
+  local have want
   [[ -n "$uri" && -n "$mountpoint" ]] || return 0
   nfs_validate_uri "$uri" || return 1
   nfs_validate_mountpoint "$mountpoint" || return 1
@@ -99,14 +83,8 @@ nfs_upgrade_existing_units() {
   have=$(awk -F= '/^Options=/ { print $2; exit }' "$unit_dir/$NFS_MOUNT_UNIT")
   want=$(nfs_mount_options)
   [[ "$have" == "$want" ]] && return 0
-  tmp=$(mktemp -d)
-  nfs_write_unit_files "$uri" "$mountpoint" "$tmp"
-  sudo_noninteractive cp "$tmp/$NFS_MOUNT_UNIT" "$tmp/$NFS_AUTO_UNIT" "$unit_dir/" || {
-    rm -rf "$tmp"
-    return 1
-  }
-  rm -rf "$tmp"
-  sudo_noninteractive systemctl daemon-reload >/dev/null 2>&1 || true
+  omaclone_privileged_load || return 1
+  omaclone_privileged install-nfs --uri "$uri" --mountpoint "$mountpoint" || return 1
   nfs_remount_hardening "$mountpoint"
   printf '%s\n' "updated $NFS_MOUNT_UNIT options" >&2
 }
@@ -367,24 +345,16 @@ nfs_check_available() {
 
 nfs_rollback_units() {
   local mountpoint="$1"
-  local unit_dir="${2:-/etc/systemd/system}"
-  local unit_name auto_name
-  nfs_unit_names "$mountpoint"
-  unit_name="$NFS_MOUNT_UNIT"
-  auto_name="$NFS_AUTO_UNIT"
-  _nfs_sudo systemctl disable --now "$auto_name" >/dev/null 2>&1 || true
-  _nfs_sudo systemctl stop "$unit_name" >/dev/null 2>&1 || true
+  omaclone_privileged_load || true
+  omaclone_privileged uninstall >/dev/null 2>&1 || true
   _nfs_sudo umount -l "$mountpoint" >/dev/null 2>&1 || true
-  _nfs_sudo rm -f "$unit_dir/$unit_name" "$unit_dir/$auto_name"
-  _nfs_sudo systemctl daemon-reload >/dev/null 2>&1 || true
-  printf '%s\n' "removed $auto_name and $unit_name (share was not available)" >&2
+  printf '%s\n' "removed omaclone system units (share was not available)" >&2
 }
 
 nfs_install_automount() {
   local uri="${1:-}"
   local mountpoint="${2:-/mnt/omaclone}"
-  local unit_dir=/etc/systemd/system
-  local tmp unit_name auto_name
+  local unit_name auto_name
 
   if [[ -z "$uri" ]]; then
     printf '%s\n' "usage: install-nfs-mount.sh host:/export [mountpoint]" >&2
@@ -393,6 +363,7 @@ nfs_install_automount() {
   nfs_validate_uri "$uri" || return 2
   nfs_validate_mountpoint "$mountpoint" || return 2
   mountpoint="${mountpoint%/}"
+  omaclone_privileged_load || return 1
 
   if nfs_mountpoint_busy "$uri" "$mountpoint"; then
     printf '%s\n' "$mountpoint is already mounted from $(nfs_mountpoint_source_label "$mountpoint"). Pick a different mountpoint or unmount it first." >&2
@@ -411,28 +382,15 @@ nfs_install_automount() {
   unit_name="$NFS_MOUNT_UNIT"
   auto_name="$NFS_AUTO_UNIT"
 
-  tmp=$(mktemp -d)
-  nfs_write_unit_files "$uri" "$mountpoint" "$tmp"
-  _nfs_sudo mkdir -p "$mountpoint"
-  _nfs_sudo cp "$tmp/$unit_name" "$tmp/$auto_name" "$unit_dir/"
-  rm -rf "$tmp"
-  _nfs_sudo systemctl daemon-reload
-
-  if ! _nfs_sudo systemctl enable --now "$auto_name"; then
-    printf '%s\n' "failed to enable $auto_name" >&2
-    nfs_rollback_units "$mountpoint" "$unit_dir"
-    return 1
-  fi
-
-  if ! _nfs_sudo systemctl start "$unit_name"; then
-    printf '%s\n' "automount enabled but $unit_name did not start" >&2
-    nfs_rollback_units "$mountpoint" "$unit_dir"
+  _nfs_sudo_note
+  if ! omaclone_privileged install-nfs --uri "$uri" --mountpoint "$mountpoint"; then
+    printf '%s\n' "failed to install $auto_name" >&2
     return 1
   fi
 
   if ! nfs_share_is_live "$mountpoint"; then
     printf '%s\n' "automount enabled but $mountpoint is not mounted as NFS" >&2
-    nfs_rollback_units "$mountpoint" "$unit_dir"
+    nfs_rollback_units "$mountpoint"
     return 1
   fi
 

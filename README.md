@@ -46,12 +46,10 @@ omaclone uninstall
 omarchy plugin remove omaclone.plugin
 ```
 
-Run `uninstall` first while the plugin tree is still present. It removes the PATH command, daily/prune timers, the keyring-retry unit, and Super+Space menu keys we added. If setup enabled lingering login, uninstall disables it. `omarchy plugin remove omaclone.plugin` unloads the bar widget. If you never ran setup, only the second command is needed. If you already removed the plugin tree, leftover Super+Space keys are the `omaclone*` entries in `~/.config/omarchy/extensions/omarchy-menu.jsonc`.
+Run `uninstall` first while the plugin tree is still present. It removes the PATH command, daily/prune timers, the keyring-retry unit, Super+Space menu keys we added, and NFS/disk **system** mount units that this install recorded (sudo). If setup enabled lingering login, uninstall disables it. `omarchy plugin remove omaclone.plugin` unloads the bar widget. If you never ran setup, only the second command is needed. If you already removed the plugin tree, leftover Super+Space keys are the `omaclone*` entries in `~/.config/omarchy/extensions/omarchy-menu.jsonc`.
 
 Neither command deletes `~/.config/omaclone`, `~/.local/share/omaclone`, or clones stored on NAS, disk, or cloud. Leftovers you may still want to clear:
 
-- NFS/disk **system** units in `/etc/systemd/system` (needs sudo; `systemctl disable --now` the `.mount` / `.automount`, then remove the unit files)
-- extra-disk systemd mounts, only if you opted in during setup
 - lingering login, only if uninstall could not clear it (`loginctl disable-linger $USER`)
 
 ---
@@ -162,7 +160,7 @@ Do not convert a browse-only SMB mount to NFS just to fix this. Use a dedicated 
 /path/to/clone/restore
 ```
 
-That launcher lives next to the encrypted restic repo (`RESTORE.md` + `config.toml` + `SHA256SUMS` + `./restore`). It has **no passwords**. Prefer a plugin install from git; a kit copy that does not match `SHA256SUMS` (scripts, backends, and `config/` allowlists) asks you to type `UNTRUSTED`. The outer `./restore` file is hashed against `scripts/restore`. An interactive kit restore asks you to type `TRUST` before using that copy’s host or bucket.
+That launcher lives next to the encrypted restic repo (`RESTORE.md` + `config.toml` + `SHA256SUMS` + `./restore`). It has **no passwords**. Prefer a plugin install from git. A kit copy is authenticated with an Ed25519 signature of the canonical tree digest (`config/omaclone-kit.sig`), verified against the project public key embedded in `./restore` (not a checksum written next to the files). A missing or unknown signature fails closed. `SHA256SUMS` is a human checksum list only. An interactive kit restore asks you to type `TRUST` before using that copy’s host or bucket.
 
 **Cloud, or you only have this plugin:**
 
@@ -279,7 +277,7 @@ omaclone snapshots                      List restic snapshots
 omaclone forget [ID...] [--all] [--yes] Remove clones from this location (alias: remove)
 omaclone status [--json|--ack]          Last clone, size, keep plan, location connected
 omaclone install                        PATH, timers, bar plugin
-omaclone uninstall                      Remove PATH command, timers, plugin symlink, and our menu keys
+omaclone uninstall                      Remove PATH command, timers, plugin symlink, our menu keys, and system mount units this install recorded
 omaclone check                          restic check
 omaclone init                           restic init on the configured repo
 omaclone prune                          Apply the keep plan and delete the rest
@@ -346,7 +344,8 @@ Edit `config/excludes.txt` (gitignore-style, relative to `$HOME`) and `config/ha
 - Three different secrets: the **restic password** (encrypts the clone; lose it and snapshots are gone), the **Omaclone keyring password** (unwraps `omaclone.keyring`; not FIDO; asked in the terminal), and **transport secrets** (S3 keys, SMB password) in that same collection. Do not mix them up.
 - SMB passwords and S3 keys use Omaclone’s own GNOME Keyring collection (or a prompt). Never the default desktop keyring, never `mount.cifs` argv. Writing to an unencrypted default keyring can make gnome-keyring refuse to load it after a secret with a newline is stored (Proton VPN and similar), which drops every other app’s saved passwords.
 - Do not reuse login, LUKS, or password-manager master passwords for the restic repo.
-- Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`) contain **no secrets**. `SHA256SUMS` covers `scripts/`, `backends/`, and `config/` (excludes, `/etc` allowlist, hardware skip, unit deny). It is not a signature. Prefer `omarchy plugin add` from git. `omaclone install` refuses to put a USB/NAS kit copy on PATH or symlink the bar plugin to the stick.
+- Bootstrap files next to the repo (`restore`, `config.toml`, `RESTORE.md`, `SHA256SUMS`) contain **no secrets**. The kit is signed: `config/omaclone-kit.sig` is an Ed25519 signature of a canonical digest of `scripts/`, `backends/`, and `config/` (except the signature file). `./restore` verifies that signature with the project public key **embedded in the launcher** before it runs other kit code or installs packages. `SHA256SUMS` is not authentication. Prefer `omarchy plugin add` from git. `omaclone install` refuses to put a USB/NAS kit copy on PATH or symlink the bar plugin to the stick.
+- NFS/disk systemd units and `/etc` restore are generated and published by a root helper that accepts only validated URI/UUID/mountpoint/tar data. It does not `sudo cp` user-writable temp files. Disk format re-resolves major:minor, size, by-id, and system-disk ancestry immediately before `mkfs`. Uninstall removes only unit files whose content hash matches this installation.
 - Prep never runs `sudo` on a script in the plugin tree. `/etc` collection is `sudo tar` with a fixed argv, written into a fresh staging directory as the user.
 - LUKS headers are not collected.
 
@@ -383,6 +382,15 @@ make test          # or: ./tests/run.sh
 
 That runs the contract tests, a hermetic restic round-trip (`init` → `clone --cron` → `restore --snapshot` → `forget`), the `--cron` skip matrix, systemd unit checks, `node ./tests/test-model.js`, and `omarchy plugin validate .` when `omarchy` is on PATH.
 
+Changes under `scripts/`, `backends/`, or `config/` (except `config/omaclone-kit.sig`) need a new kit signature before a USB/NAS copy will verify:
+
+```bash
+python3 scripts/kit_auth.py --sign /path/to/omaclone-kit.pem .
+python3 scripts/kit_auth.py --verify .
+```
+
+The private key is not in the tree. The public key is `config/omaclone-kit.pub` and is embedded in `scripts/restore`.
+
 Individual files still work:
 
 ```bash
@@ -409,6 +417,8 @@ OMACLONE_DISK_LIVE=1 ./tests/test-disk-live.sh   # opt-in; needs a plugged extra
 ./tests/test-install.sh
 ./tests/test-setup.sh
 ./tests/test-restore-safety.sh
+./tests/test-privileged.sh
+./tests/test-kit-auth.sh
 ./tests/test-password-file.sh
 ./tests/test-redaction.sh
 ./tests/test-prep-safety.sh

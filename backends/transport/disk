@@ -81,23 +81,37 @@ print("  ".join(bits))
 }
 
 _format_device() {
-  local path="$1" label="${2:-}"
+  local rec="$1" label="${2:-}"
+  local path majmin bytes by_id serial pkname phrase
+  path=$(_disk_json_get "$rec" path)
+  majmin=$(_disk_json_get "$rec" majmin)
+  bytes=$(_disk_json_get "$rec" bytes)
+  by_id=$(_disk_json_get "$rec" by_id)
+  serial=$(_disk_json_get "$rec" serial)
+  pkname=$(_disk_json_get "$rec" pkname)
+  [[ -n "$path" && -n "$majmin" && -n "$bytes" ]] || {
+    printf '%s\n' "refusing to format without a stable device identity" >&2
+    return 1
+  }
   if ! have_cmd gum; then
     printf '%s\n' "refusing to format $path without gum confirmation" >&2
     return 1
   fi
+  omaclone_privileged_load || return 1
   gum style --foreground 196 "This will ERASE $path and create an ext4 filesystem."
   if ! gum confirm "Format $path as ext4?"; then
     return 1
   fi
-  local phrase
   phrase=$(gum input --placeholder "Type DESTROY to erase $path" </dev/tty)
   [[ "$phrase" == DESTROY ]] || { printf '%s\n' "aborted" >&2; return 1; }
-  if [[ -n "$label" ]]; then
-    sudo_tty mkfs.ext4 -F -L "$label" "$path"
-  else
-    sudo_tty mkfs.ext4 -F "$path"
-  fi
+  omaclone_privileged format-disk \
+    --path "$path" \
+    --majmin "$majmin" \
+    --bytes "$bytes" \
+    --by-id "$by_id" \
+    --serial "$serial" \
+    --pkname "$pkname" \
+    --label "$label"
 }
 
 setup() {
@@ -122,7 +136,7 @@ setup() {
   else
     echo "No filesystem on $path." >&2
     label=$(gum input --placeholder "Volume label (default Omaclone)" --value "$label" </dev/tty)
-    _format_device "$path" "$label" || exit 1
+    _format_device "$rec" "$label" || exit 1
     rec=$(python3 "$NAS_BACKUP_ROOT/scripts/disk_candidates.py" | python3 -c '
 import json,sys
 want=sys.argv[1]
