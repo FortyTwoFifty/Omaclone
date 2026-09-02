@@ -83,6 +83,10 @@ grep -q 'OMACLONE_TEST' "$ROOT/scripts/cmd-restore.sh" \
   || fail "--blank-omarchy must be gated on OMACLONE_TEST"
 grep -q 'Type TRUST' "$ROOT/scripts/restore" \
   || fail "kit restore must re-prompt before using kit config.toml"
+grep -q 'TRUST' "$ROOT/RESTORE.md" \
+  || fail "kit RESTORE.md must document the TRUST prompt"
+grep -q 'recovery card' "$ROOT/RESTORE.md" \
+  || fail "kit RESTORE.md must point at the recovery card, not only ~/.local/share"
 grep -q '_restore_check_space' "$ROOT/scripts/cmd-restore.sh" \
   || fail "restore must check free space before restic restore"
 grep -q 'pacman -Qqen' "$ROOT/scripts/lib.sh" \
