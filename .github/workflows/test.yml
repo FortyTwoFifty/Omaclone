@@ -24,7 +24,7 @@ jobs:
         run: |
           shellcheck --severity=error scripts/omaclone scripts/cmd-*.sh scripts/lib.sh scripts/restore \
             scripts/deps.sh scripts/backend.sh scripts/tui.sh scripts/nfs-lib.sh scripts/transport-lib.sh \
-            scripts/install-disk-mount.sh scripts/launch-tui.sh
+            scripts/locations.sh scripts/install-disk-mount.sh scripts/launch-tui.sh
       - name: Plugin validate (when omarchy is installed)
         run: |
           if command -v omarchy >/dev/null 2>&1; then

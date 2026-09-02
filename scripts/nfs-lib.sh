@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+# Sourced library — not a standalone entrypoint.
 if [[ -n "${OMACLONE_NFS_LIB_LOADED:-}" ]]; then
   return 0
 fi

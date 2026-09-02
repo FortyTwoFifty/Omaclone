@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+# Sourced library — not a standalone entrypoint.
 if [[ -n "${OMACLONE_LOCATIONS_LOADED:-}" ]]; then
   return 0
 fi

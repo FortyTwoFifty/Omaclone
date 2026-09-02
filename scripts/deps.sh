@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+# Sourced library — not a standalone entrypoint.
 set +o history 2>/dev/null || true
 unset HISTFILE
 set +x +v

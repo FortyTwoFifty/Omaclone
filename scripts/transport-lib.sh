@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+# Sourced library — not a standalone entrypoint.
 set +x +v
 set -euo pipefail
 
